@@ -1,0 +1,75 @@
+# Copy this file to config.yaml and edit it for your installation.
+# config.yaml is gitignored — it is local, not committed.
+#
+# See Backyard_Bird_Discovery_System_Requirements.md §18 for the full
+# field reference.
+
+system:
+  timezone: America/Los_Angeles
+  log_level: INFO
+  data_directory: ./data
+
+location:
+  latitude: 45.0
+  longitude: -123.0
+
+audio:
+  device_name: Outdoor USB Microphone
+  microphone_id: backyard-mic-01
+  sample_rate: 48000
+  channels: 1
+  segment_seconds: 30
+  overlap_seconds: 3
+  raw_audio_retention_days: 7
+  failed_audio_retention_days: 30
+
+birdnet:
+  database_minimum_confidence: 0.60
+  slideshow_minimum_confidence: 0.75
+  sensitivity: 1.0
+  geographic_filter_enabled: true
+  max_workers: 1
+  retain_raw_results: true
+  duplicate_window_seconds: 5
+
+detections:
+  extract_detection_clips: true
+  clip_padding_seconds: 1
+  retain_clips_days: 30
+
+images:
+  preferred_sources:
+    - wikimedia_commons
+    - inaturalist
+  minimum_width: 1280
+  minimum_height: 720
+  images_per_species: 3
+  refresh_after_days: 90
+  require_license_metadata: true
+
+dashboard:
+  # 127.0.0.1 = this machine only (default, §23.3). Set to 0.0.0.0 to
+  # make the dashboard reachable from other devices on your LAN (phone,
+  # laptop, etc.) — no login is required once it's LAN-visible, so only
+  # do this on a network you trust. See README's Phase 3.5 notes.
+  host: 127.0.0.1
+  port: 8765
+
+slideshow:
+  update_interval_minutes: 30
+  one_species_per_day: true
+  order: first_detection
+  display_mode: informational
+  image_duration_seconds: 20
+  retain_daily_slideshows_days: 30
+
+photo_frame:
+  manufacturer: Euphro
+  model: WF1561
+  expected_platform: Uhale
+  adapter: local_export
+  target_width: 1920
+  target_height: 1080
+  orientation: landscape
+  preferred_format: JPEG
+  export_directory: ./data/frame-export/current

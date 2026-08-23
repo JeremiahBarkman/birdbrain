@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Backyard Bird Discovery</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body>
+  <header>
+    <h1>🐦 Backyard Bird Discovery</h1>
+    <p id="last-updated">Loading…</p>
+  </header>
+
+  <section class="summary-grid">
+    <div class="stat-card">
+      <div class="stat-value" id="stat-total-species">–</div>
+      <div class="stat-label">Species (all time)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-total-detections">–</div>
+      <div class="stat-label">Detections (all time)</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-species-today">–</div>
+      <div class="stat-label">Species today</div>
+    </div>
+    <div class="stat-card">
+      <div class="stat-value" id="stat-detections-today">–</div>
+      <div class="stat-label">Detections today</div>
+    </div>
+  </section>
+
+  <section class="most-recent">
+    <h2>Most Recent Detection</h2>
+    <div class="recent-card">
+      <div class="bird-image-slot" id="recent-image-slot">
+        <span class="image-placeholder">🕊️</span>
+      </div>
+      <div class="recent-details">
+        <div class="species-name" id="recent-common-name">–</div>
+        <div class="species-scientific" id="recent-scientific-name"></div>
+        <div class="recent-meta" id="recent-meta"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="species-list">
+    <h2>All Species Detected</h2>
+    <div class="filters" role="group" aria-label="Filter species table">
+      <div class="filter-group">
+        <label for="confidence-filter">Min. confidence <span id="confidence-value">45%</span></label>
+        <input type="range" id="confidence-filter" min="45" max="75" step="5" value="45">
+      </div>
+      <div class="filter-group">
+        <label for="date-filter">Date</label>
+        <input type="date" id="date-filter">
+      </div>
+      <button id="today-filter-btn" class="filter-btn" type="button">Today</button>
+      <button id="clear-filters-btn" class="filter-btn filter-btn-clear" type="button">Clear filters</button>
+    </div>
+    <div class="table-scroll">
+      <table id="species-table">
+        <thead>
+          <tr>
+            <th class="thumb-col"></th>
+            <th>Species</th>
+            <th>Detections</th>
+            <th>Confidence</th>
+            <th>Recording</th>
+            <th>First Seen</th>
+            <th>Last Seen</th>
+            <th>Seen For</th>
+          </tr>
+        </thead>
+        <tbody id="species-table-body">
+          <tr><td colspan="8">Loading…</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <button id="species-show-more" class="show-more-btn" type="button" hidden>See more</button>
+  </section>
+
+  <div class="image-modal" id="image-modal" hidden>
+    <button class="image-modal-close" id="image-modal-close" type="button" aria-label="Close">&times;</button>
+    <img id="image-modal-img" src="" alt="">
+  </div>
+
+  <script src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</body>
+</html>

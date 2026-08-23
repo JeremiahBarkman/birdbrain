@@ -1,0 +1,566 @@
+:root {
+  --bg: #f7f5f0;
+  --surface: #ffffff;
+  --border: #e2ded4;
+  --text: #2b2a26;
+  --text-muted: #6b6860;
+  --accent: #3f7d5c;
+  --accent-soft: #e7f2ec;
+  --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #1c1b18;
+    --surface: #262521;
+    --border: #3a3833;
+    --text: #eeece5;
+    --text-muted: #a3a094;
+    --accent: #6fbd93;
+    --accent-soft: #223229;
+    --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  padding: 1.5rem;
+  background: var(--bg);
+  color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  max-width: 960px;
+  margin-inline: auto;
+}
+
+header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+}
+
+h1 {
+  font-size: 1.5rem;
+  margin: 0;
+}
+
+h2 {
+  font-size: 1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-muted);
+  margin: 0 0 0.75rem;
+}
+
+#last-updated {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin: 0;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
+}
+
+.stat-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.stat-value {
+  font-size: 1.8rem;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.stat-label {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+}
+
+.most-recent {
+  margin-bottom: 1.5rem;
+}
+
+.recent-card {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+  box-shadow: var(--shadow);
+}
+
+.bird-image-slot {
+  width: 108px; /* 50% larger than the species-table thumbnails' base size */
+  height: 108px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.bird-image-slot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.image-placeholder {
+  font-size: 1.8rem;
+}
+
+.bird-image-slot .image-placeholder {
+  font-size: 2.7rem; /* scaled with the larger slot */
+}
+
+.bird-image-slot img,
+.species-thumb img {
+  cursor: zoom-in;
+  transition: opacity 0.15s;
+}
+
+.bird-image-slot img:hover,
+.species-thumb img:hover {
+  opacity: 0.85;
+}
+
+.species-name {
+  font-size: 1.15rem;
+  font-weight: 600;
+}
+
+.species-scientific {
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 0.9rem;
+}
+
+.recent-meta {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  margin-top: 0.25rem;
+}
+
+.filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+.filter-group {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.filter-group label {
+  white-space: nowrap;
+}
+
+#confidence-filter {
+  width: 140px;
+  accent-color: var(--accent);
+}
+
+#date-filter {
+  font: inherit;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.3rem 0.5rem;
+}
+
+.filter-btn {
+  padding: 0.4rem 0.85rem;
+  background: var(--surface);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 20px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.filter-btn:hover {
+  background: var(--accent-soft);
+}
+
+.filter-btn.active {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+.filter-btn-clear {
+  margin-left: auto; /* pins it to the far right on wide screens */
+  color: var(--text-muted);
+}
+
+.table-scroll {
+  overflow-x: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+}
+
+table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.9rem;
+}
+
+th, td {
+  text-align: left;
+  padding: 0.6rem 0.75rem;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+th {
+  color: var(--text-muted);
+  font-weight: 600;
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+tr:last-child td {
+  border-bottom: none;
+}
+
+.thumb-col {
+  width: 44px;
+}
+
+.species-thumb {
+  width: 36px;
+  height: 36px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+
+.species-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+td .scientific {
+  display: block;
+  font-style: italic;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.species-link {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.species-link:hover,
+.species-link:focus-visible {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+.recording-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.recording-cell audio {
+  height: 32px;
+  max-width: 220px;
+  color-scheme: light dark; /* lets the native player chrome follow the page's theme */
+}
+
+.no-recording {
+  color: var(--text-muted);
+}
+
+.recording-actions {
+  display: flex;
+  gap: 0.25rem;
+  flex-shrink: 0;
+}
+
+.star-btn,
+.save-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.95rem;
+  line-height: 1;
+  text-decoration: none;
+}
+
+.star-btn:hover,
+.save-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.star-btn.is-approved {
+  background: #f5c518; /* a star stays gold regardless of light/dark — not a themed surface */
+  border-color: #d4a70e;
+  color: #6b4e00;
+}
+
+.show-more-btn {
+  display: block;
+  width: 100%;
+  padding: 0.6rem;
+  margin-top: 0.75rem;
+  background: var(--surface);
+  color: var(--accent);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  font-size: 0.85rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow);
+}
+
+.show-more-btn:hover {
+  background: var(--accent-soft);
+}
+
+.show-more-btn[hidden] {
+  display: none;
+}
+
+.image-modal {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.85);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+  cursor: zoom-out;
+}
+
+.image-modal[hidden] {
+  display: none;
+}
+
+.image-modal img {
+  max-width: 90vw;
+  max-height: 90vh;
+  border-radius: 8px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+  cursor: default;
+}
+
+.image-modal-close {
+  position: absolute;
+  top: 1.25rem;
+  right: 1.5rem;
+  background: none;
+  border: none;
+  color: #fff;
+  font-size: 2.25rem;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0.5rem;
+}
+
+/* Below tablet width, the 7-column species table stops being
+   readable even with horizontal scroll, so it's restructured into a
+   stack of cards: header row hidden, each <tr> becomes a card, and
+   each stat cell becomes a labeled key/value line (label from
+   ::before, keyed off the same column classes dashboard.js already
+   renders — not nth-child, so column reordering can't silently break
+   this). The recent-detection card and stat grid get lighter-touch
+   tweaks: still their normal layout, just tuned for less width. */
+@media (max-width: 640px) {
+  body {
+    padding: 1rem;
+  }
+
+  .summary-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+
+  .stat-value {
+    font-size: 1.5rem;
+  }
+
+  .recent-card {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .bird-image-slot {
+    width: 84px;
+    height: 84px;
+  }
+
+  .filters {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 0.75rem;
+  }
+
+  .filter-group {
+    justify-content: space-between;
+  }
+
+  #confidence-filter,
+  #date-filter {
+    flex: 1;
+    width: auto;
+    margin-left: 0.75rem;
+  }
+
+  .filter-btn-clear {
+    margin-left: 0;
+  }
+
+  .table-scroll {
+    overflow-x: visible;
+    background: none;
+    border: none;
+    box-shadow: none;
+  }
+
+  #species-table,
+  #species-table tbody {
+    display: block;
+    width: 100%;
+  }
+
+  #species-table thead {
+    display: none;
+  }
+
+  #species-table tr {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.4rem 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    box-shadow: var(--shadow);
+    padding: 0.75rem;
+    margin-bottom: 0.75rem;
+  }
+
+  #species-table tr:last-child {
+    margin-bottom: 0;
+  }
+
+  #species-table td {
+    display: block;
+    border-bottom: none;
+    padding: 0;
+    white-space: normal;
+  }
+
+  #species-table td[colspan] {
+    flex: 1 1 100%;
+  }
+
+  #species-table td.col-species {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  #species-table td.col-detections,
+  #species-table td.col-confidence,
+  #species-table td.col-first-seen,
+  #species-table td.col-last-seen,
+  #species-table td.col-seen-for {
+    flex: 1 1 45%;
+    display: flex;
+    justify-content: space-between;
+    gap: 0.5rem;
+    font-size: 0.85rem;
+  }
+
+  #species-table td.col-detections::before {
+    content: "Detections";
+    color: var(--text-muted);
+  }
+
+  #species-table td.col-confidence::before {
+    content: "Confidence";
+    color: var(--text-muted);
+  }
+
+  #species-table td.col-first-seen::before {
+    content: "First seen";
+    color: var(--text-muted);
+  }
+
+  #species-table td.col-last-seen::before {
+    content: "Last seen";
+    color: var(--text-muted);
+  }
+
+  #species-table td.col-seen-for::before {
+    content: "Seen for";
+    color: var(--text-muted);
+  }
+
+  /* Full-width row of its own, not the 45%-paired layout above — an
+     <audio> control needs real room, unlike a short text stat. */
+  #species-table td.col-recording {
+    flex: 1 1 100%;
+  }
+
+  #species-table td.col-recording::before {
+    content: "Recording";
+    display: block;
+    color: var(--text-muted);
+    margin-bottom: 0.25rem;
+  }
+
+  #species-table td.col-recording audio {
+    width: 100%;
+    max-width: none;
+  }
+}

@@ -1,0 +1,49 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "backyard-bird-display"
+version = "0.1.0"
+description = "Local-first backyard bird discovery system: audio capture, BirdNET identification, and photo-frame delivery."
+readme = "README.md"
+requires-python = ">=3.9,<3.12"
+dependencies = [
+    "birdnetlib>=0.17",
+    # birdnetlib doesn't declare these itself: librosa loads audio,
+    # tensorflow supplies the TFLite interpreter it runs the model with.
+    # tflite-runtime has no official macOS arm64 wheels, so we use the
+    # full tensorflow package (official arm64 wheels since 2.13).
+    "librosa>=0.10",
+    "tensorflow>=2.13,<2.17",
+    "pydantic>=2.5",
+    "pyyaml>=6.0",
+    "sounddevice>=0.4.6",
+    "numpy>=1.24",
+    "click>=8.1",
+    # Local status dashboard (§22). A minimal Flask app is simpler and
+    # better-tested than hand-rolling HTTP routing/JSON on http.server.
+    "flask>=3.0",
+    # Image acquisition (§15): HTTP for provider APIs/downloads, Pillow
+    # for validation/resizing. Both were already transitive deps (via
+    # birdnetlib/matplotlib) — now used directly, so declared directly.
+    "requests>=2.31",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4",
+]
+
+[project.scripts]
+bird-display = "backyard_bird.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: exercises real BirdNET model / hardware, slower and may be skipped",
+]

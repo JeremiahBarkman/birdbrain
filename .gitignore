@@ -1,0 +1,29 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.venv/
+venv/
+build/
+dist/
+
+# Local configuration (copy from config.example.yaml)
+config/config.yaml
+config/secrets.env
+
+# Runtime data — created on demand by the application, not tracked
+/data/*
+!/data/.gitkeep
+
+# Local test audio (large binary files, not committed)
+tests/sample_audio/*.wav
+tests/temp/
+
+# macOS
+.DS_Store
+
+# Claude Code local settings — machine-specific permissions/paths, not for sharing
+.claude/settings.local.json
