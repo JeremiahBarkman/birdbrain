@@ -11,6 +11,7 @@ import time
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -18,10 +19,12 @@ from backyard_bird.analysis import worker as worker_module
 from backyard_bird.analysis.birdnet_adapter import AnalysisResult, RawDetection
 from backyard_bird.analysis.worker import (
     QueueDirs,
+    _enforce_disk_floor,
     _maybe_sweep_processed_and_failed,
     process_one_file,
     recover_stuck_segments,
 )
+from backyard_bird.audio import retention
 from backyard_bird.config import AudioConfig, BirdNETConfig, DetectionsConfig, LocationConfig
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
@@ -386,3 +389,49 @@ def test_sweep_is_noop_when_audio_config_omitted(dirs: QueueDirs) -> None:
 
     assert new_last_swept == 0.0
     assert old_processed.exists()
+
+
+# -- _enforce_disk_floor --------------------------------------------------
+#
+# The hard backstop behind the age-based sweeps above: irrespective of
+# retention_days, free space is never allowed to drop below
+# min_free_disk_gb. See test_retention.py for enforce_disk_space_floor
+# itself; these tests just confirm worker.py wires it up with the
+# right priority order (processed/, then failed/, then incoming/).
+
+
+def _fake_disk(monkeypatch: pytest.MonkeyPatch, dirs: QueueDirs, capacity_bytes: int) -> None:
+    tracked = [dirs.processed, dirs.failed, dirs.incoming]
+
+    def fake_disk_usage(_path: Path) -> SimpleNamespace:
+        used = sum(p.stat().st_size for d in tracked for p in d.glob("*.wav"))
+        return SimpleNamespace(total=capacity_bytes, used=used, free=capacity_bytes - used)
+
+    monkeypatch.setattr(retention.shutil, "disk_usage", fake_disk_usage)
+
+
+def test_enforce_disk_floor_drains_processed_before_incoming(
+    dirs: QueueDirs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    processed_file = dirs.processed / "old.wav"
+    incoming_file = dirs.incoming / "old.wav"
+    processed_file.write_bytes(b"x" * 1000)
+    incoming_file.write_bytes(b"x" * 1000)
+    # 100 bytes free with both present; clearing processed/ alone
+    # (1000 bytes) only reaches 1100 — short of the 1900 floor — so
+    # incoming/ must be drained too, but only after processed/ is.
+    _fake_disk(monkeypatch, dirs, capacity_bytes=2100)
+
+    audio_config = _audio_config(min_free_disk_gb=1900 / 1024**3)
+    deleted = _enforce_disk_floor(dirs, audio_config)
+
+    assert deleted == [processed_file, incoming_file]
+
+
+def test_enforce_disk_floor_noop_when_audio_config_omitted(dirs: QueueDirs, monkeypatch: pytest.MonkeyPatch) -> None:
+    processed_file = dirs.processed / "old.wav"
+    processed_file.write_bytes(b"x" * 1000)
+    _fake_disk(monkeypatch, dirs, capacity_bytes=1000)  # 0 bytes free
+
+    assert _enforce_disk_floor(dirs, None) == []
+    assert processed_file.exists()

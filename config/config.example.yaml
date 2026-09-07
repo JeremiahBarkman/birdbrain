@@ -23,6 +23,11 @@ audio:
   raw_audio_retention_days: 7
   processed_audio_retention_days: 7
   failed_audio_retention_days: 30
+  # Hard backstop regardless of the retention_days settings above —
+  # once free disk space drops below this, oldest processed/ (then
+  # failed/, then incoming/) files are deleted immediately rather than
+  # waiting for the next age-based sweep. See audio/retention.py.
+  min_free_disk_gb: 5
 
 birdnet:
   database_minimum_confidence: 0.60

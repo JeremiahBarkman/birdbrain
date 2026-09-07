@@ -41,6 +41,7 @@ class AudioConfig(BaseModel):
     raw_audio_retention_days: int = 7
     processed_audio_retention_days: int = 7
     failed_audio_retention_days: int = 30
+    min_free_disk_gb: float = 5.0
 
 
 class BirdNETConfig(BaseModel):

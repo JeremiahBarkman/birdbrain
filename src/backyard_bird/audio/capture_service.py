@@ -27,7 +27,7 @@ import numpy as np
 import sounddevice as sd
 
 from backyard_bird.audio.devices import find_input_device
-from backyard_bird.audio.retention import sweep_incoming
+from backyard_bird.audio.retention import enforce_disk_space_floor, sweep_incoming
 from backyard_bird.audio.segmenter import AudioSegmenter, Segment, format_segment_filename
 from backyard_bird.config import AudioConfig
 
@@ -168,6 +168,18 @@ class CaptureService:
                 if now - self._last_retention_sweep >= _RETENTION_SWEEP_INTERVAL_SECONDS:
                     self._last_retention_sweep = now
                     sweep_incoming(self.incoming_dir, self.config.raw_audio_retention_days)
+
+                # Hard backstop behind the age-based sweep above,
+                # checked every iteration — cheap (a statvfs syscall)
+                # unless free space has actually dropped below the
+                # floor. The analyzer being down, or a burst of
+                # capture volume, can outrun retention_days; this
+                # guarantees capture never fills the disk regardless
+                # (§8.1). enforce_disk_space_floor is a no-op above
+                # the floor.
+                enforce_disk_space_floor(
+                    self.incoming_dir, [self.incoming_dir], self.config.min_free_disk_gb
+                )
 
                 try:
                     chunk = self._chunk_queue.get(timeout=1.0)

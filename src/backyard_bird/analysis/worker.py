@@ -22,7 +22,7 @@ from backyard_bird.analysis.birdnet_adapter import analyze_file
 from backyard_bird.analysis.deduplicator import find_duplicate
 from backyard_bird.analysis.result_parser import ParsedDetection, parse_detection
 from backyard_bird.audio.clips import extract_clip, species_clip_path
-from backyard_bird.audio.retention import sweep_failed, sweep_processed
+from backyard_bird.audio.retention import enforce_disk_space_floor, sweep_failed, sweep_processed
 from backyard_bird.audio.segmenter import parse_segment_filename
 from backyard_bird.config import AudioConfig, BirdNETConfig, DetectionsConfig, LocationConfig
 from backyard_bird.database.repositories import (
@@ -291,6 +291,26 @@ def _maybe_sweep_processed_and_failed(
     return now
 
 
+def _enforce_disk_floor(dirs: QueueDirs, audio_config: AudioConfig | None) -> list[Path]:
+    """Hard backstop behind _maybe_sweep_processed_and_failed — checked
+    every loop iteration (shutil.disk_usage is a cheap syscall; this is
+    a no-op unless free space has actually dropped below the floor, so
+    the cost of checking often is negligible).
+
+    processed/ is drained first (safest to lose — see retention.py),
+    then failed/, then incoming/ as a last resort: losing unanalyzed
+    audio is bad, but a full disk stopping capture and detection
+    entirely (§8.1, §12) is worse.
+    """
+    if audio_config is None:
+        return []
+    return enforce_disk_space_floor(
+        dirs.processed,
+        [dirs.processed, dirs.failed, dirs.incoming],
+        audio_config.min_free_disk_gb,
+    )
+
+
 def run_worker_loop(
     conn: sqlite3.Connection,
     birdnet_config: BirdNETConfig,
@@ -308,8 +328,10 @@ def run_worker_loop(
 
     Also periodically sweeps processed/ and failed/ per
     audio_config's retention settings (§8.1, §9) — the same policy
-    capture_service already applies to incoming/. See
-    _maybe_sweep_processed_and_failed.
+    capture_service already applies to incoming/ — and, every
+    iteration, enforces audio_config.min_free_disk_gb as a hard floor
+    regardless of retention_days. See _maybe_sweep_processed_and_failed
+    and _enforce_disk_floor.
     """
     dirs.ensure()
     cleanup_stale_partial_files(dirs.incoming)
@@ -321,6 +343,7 @@ def run_worker_loop(
         last_retention_sweep = _maybe_sweep_processed_and_failed(
             dirs, audio_config, last_retention_sweep, time.monotonic()
         )
+        _enforce_disk_floor(dirs, audio_config)
 
         pending = sorted(dirs.incoming.glob("*.wav"))
         if not pending:

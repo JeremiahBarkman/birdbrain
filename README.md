@@ -486,6 +486,15 @@ actually open the microphone.
 Edit `config/config.yaml`: at minimum set `location.latitude` /
 `location.longitude` and `audio.device_name` for your installation.
 
+### Uninstalling
+
+```bash
+./scripts/uninstall.sh                    # stops services, removes .venv/
+./scripts/uninstall.sh --purge-data       # also deletes data/ and config/config.yaml
+                                           # (detection database, captured audio, images —
+                                           #  confirmed interactively; add --yes to skip that)
+```
+
 ## Running everything (desktop launcher)
 
 **Start Backyard Birds.command** and **Stop Backyard Birds.command** on
