@@ -22,8 +22,9 @@ from backyard_bird.analysis.birdnet_adapter import analyze_file
 from backyard_bird.analysis.deduplicator import find_duplicate
 from backyard_bird.analysis.result_parser import ParsedDetection, parse_detection
 from backyard_bird.audio.clips import extract_clip, species_clip_path
+from backyard_bird.audio.retention import sweep_failed, sweep_processed
 from backyard_bird.audio.segmenter import parse_segment_filename
-from backyard_bird.config import BirdNETConfig, DetectionsConfig, LocationConfig
+from backyard_bird.config import AudioConfig, BirdNETConfig, DetectionsConfig, LocationConfig
 from backyard_bird.database.repositories import (
     find_audio_segment_by_file_path,
     get_best_recording_confidence,
@@ -40,6 +41,7 @@ from backyard_bird.database.repositories import (
 logger = logging.getLogger(__name__)
 
 _STALE_PARTIAL_SECONDS = 3600.0  # a .partial older than this means capture crashed mid-write
+_RETENTION_SWEEP_INTERVAL_SECONDS = 3600.0  # matches capture_service's incoming/ sweep cadence
 
 
 @dataclass(frozen=True)
@@ -270,6 +272,25 @@ def process_one_file(
     )
 
 
+def _maybe_sweep_processed_and_failed(
+    dirs: QueueDirs,
+    audio_config: AudioConfig | None,
+    last_swept_at: float,
+    now: float,
+) -> float:
+    """Run the processed/ and failed/ retention sweeps if the interval
+    has elapsed, and return the (possibly updated) last-swept time.
+
+    A None audio_config disables both sweeps — used by callers/tests
+    that don't care about retention rather than making them supply one.
+    """
+    if audio_config is None or now - last_swept_at < _RETENTION_SWEEP_INTERVAL_SECONDS:
+        return last_swept_at
+    sweep_processed(dirs.processed, audio_config.processed_audio_retention_days)
+    sweep_failed(dirs.failed, audio_config.failed_audio_retention_days)
+    return now
+
+
 def run_worker_loop(
     conn: sqlite3.Connection,
     birdnet_config: BirdNETConfig,
@@ -277,19 +298,30 @@ def run_worker_loop(
     dirs: QueueDirs,
     stop_event: threading.Event,
     detections_config: DetectionsConfig,
+    audio_config: AudioConfig | None = None,
     max_files: int | None = None,
     poll_interval_seconds: float = 2.0,
 ) -> int:
     """Block, processing data/audio/incoming/ continuously until
     stop_event is set or max_files is reached (the latter is for
     bounded local smoke tests — production runs pass None).
+
+    Also periodically sweeps processed/ and failed/ per
+    audio_config's retention settings (§8.1, §9) — the same policy
+    capture_service already applies to incoming/. See
+    _maybe_sweep_processed_and_failed.
     """
     dirs.ensure()
     cleanup_stale_partial_files(dirs.incoming)
     recover_stuck_segments(conn, dirs)
 
     processed_count = 0
+    last_retention_sweep = 0.0
     while not stop_event.is_set():
+        last_retention_sweep = _maybe_sweep_processed_and_failed(
+            dirs, audio_config, last_retention_sweep, time.monotonic()
+        )
+
         pending = sorted(dirs.incoming.glob("*.wav"))
         if not pending:
             stop_event.wait(poll_interval_seconds)

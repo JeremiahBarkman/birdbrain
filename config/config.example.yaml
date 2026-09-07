@@ -21,6 +21,7 @@ audio:
   segment_seconds: 30
   overlap_seconds: 3
   raw_audio_retention_days: 7
+  processed_audio_retention_days: 7
   failed_audio_retention_days: 30
 
 birdnet:

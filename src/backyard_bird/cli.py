@@ -270,6 +270,7 @@ def analyze_run(ctx: click.Context, max_files: int | None) -> None:
         dirs,
         stop_event,
         app_config.detections,
+        audio_config=app_config.audio,
         max_files=max_files,
     )
     conn.close()

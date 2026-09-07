@@ -39,6 +39,7 @@ class AudioConfig(BaseModel):
     segment_seconds: float = 30
     overlap_seconds: float = 3
     raw_audio_retention_days: int = 7
+    processed_audio_retention_days: int = 7
     failed_audio_retention_days: int = 30
 
 

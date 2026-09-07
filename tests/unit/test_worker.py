@@ -5,7 +5,9 @@ tests/integration/test_birdnet_adapter.py.
 """
 from __future__ import annotations
 
+import os
 import sqlite3
+import time
 import wave
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,8 +16,13 @@ import pytest
 
 from backyard_bird.analysis import worker as worker_module
 from backyard_bird.analysis.birdnet_adapter import AnalysisResult, RawDetection
-from backyard_bird.analysis.worker import QueueDirs, process_one_file, recover_stuck_segments
-from backyard_bird.config import BirdNETConfig, DetectionsConfig, LocationConfig
+from backyard_bird.analysis.worker import (
+    QueueDirs,
+    _maybe_sweep_processed_and_failed,
+    process_one_file,
+    recover_stuck_segments,
+)
+from backyard_bird.config import AudioConfig, BirdNETConfig, DetectionsConfig, LocationConfig
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
     find_audio_segment_by_file_path,
@@ -328,3 +335,54 @@ def test_recover_resets_interrupted_segment_to_pending(conn: sqlite3.Connection,
     assert (dirs.incoming / filename).exists()
     row = find_audio_segment_by_file_path(conn, str(dirs.incoming / filename))
     assert row["processing_status"] == "pending"
+
+
+# -- _maybe_sweep_processed_and_failed -----------------------------------------
+
+
+def _audio_config(**overrides: object) -> AudioConfig:
+    return AudioConfig(device_name="test-mic", microphone_id="mic-01", **overrides)
+
+
+def _age_file(path: Path, days: float) -> None:
+    old_time = time.time() - days * 86400
+    os.utime(path, (old_time, old_time))
+
+
+def test_sweep_deletes_old_processed_and_failed_files_once_interval_elapses(dirs: QueueDirs) -> None:
+    old_processed = dirs.processed / "old.wav"
+    old_failed = dirs.failed / "old.wav"
+    old_processed.write_bytes(b"x")
+    old_failed.write_bytes(b"x")
+    _age_file(old_processed, days=10)
+    _age_file(old_failed, days=10)
+
+    audio_config = _audio_config(processed_audio_retention_days=7, failed_audio_retention_days=7)
+    new_last_swept = _maybe_sweep_processed_and_failed(dirs, audio_config, last_swept_at=0.0, now=10_000.0)
+
+    assert new_last_swept == 10_000.0
+    assert not old_processed.exists()
+    assert not old_failed.exists()
+
+
+def test_sweep_is_noop_before_interval_elapses(dirs: QueueDirs) -> None:
+    old_processed = dirs.processed / "old.wav"
+    old_processed.write_bytes(b"x")
+    _age_file(old_processed, days=10)
+
+    audio_config = _audio_config(processed_audio_retention_days=7)
+    new_last_swept = _maybe_sweep_processed_and_failed(dirs, audio_config, last_swept_at=100.0, now=200.0)
+
+    assert new_last_swept == 100.0  # unchanged: interval hasn't elapsed
+    assert old_processed.exists()
+
+
+def test_sweep_is_noop_when_audio_config_omitted(dirs: QueueDirs) -> None:
+    old_processed = dirs.processed / "old.wav"
+    old_processed.write_bytes(b"x")
+    _age_file(old_processed, days=10)
+
+    new_last_swept = _maybe_sweep_processed_and_failed(dirs, None, last_swept_at=0.0, now=10_000.0)
+
+    assert new_last_swept == 0.0
+    assert old_processed.exists()
