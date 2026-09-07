@@ -39,9 +39,21 @@ class AudioConfig(BaseModel):
     segment_seconds: float = 30
     overlap_seconds: float = 3
     raw_audio_retention_days: int = 7
-    processed_audio_retention_days: int = 7
+    # Short by design, not a placeholder: nothing in the app reads
+    # processed/ again after analysis (detections are in SQLite, the
+    # per-species best clip is already in best_clips/ — see
+    # worker.py's _maybe_update_best_recording). This is kept around
+    # only as a brief spot-check window, not a data store, so it
+    # defaults low rather than assuming disk space is free.
+    processed_audio_retention_days: int = 1
     failed_audio_retention_days: int = 30
-    min_free_disk_gb: float = 5.0
+    # A true last-resort — see enforce_disk_space_floor in
+    # audio/retention.py. Sized for headroom, not as the primary
+    # defense against filling the disk; that's the low retention
+    # values above. If this default is the thing actually reclaiming
+    # space day to day, the retention_days values need lowering, not
+    # this number raising.
+    min_free_disk_gb: float = 10.0
 
 
 class BirdNETConfig(BaseModel):

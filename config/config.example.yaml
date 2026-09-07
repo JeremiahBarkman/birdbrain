@@ -21,13 +21,22 @@ audio:
   segment_seconds: 30
   overlap_seconds: 3
   raw_audio_retention_days: 7
-  processed_audio_retention_days: 7
+  # Short by design: detections are already durable in SQLite and each
+  # species' best recording is already saved to best_clips/, so
+  # nothing reads processed/ again after analysis — this is only a
+  # brief window to spot-check recent audio by hand, not a data store.
+  # At ~30s segments captured continuously, every extra day here is
+  # roughly another 8-9GB of disk. Raise it only if you actually plan
+  # to browse processed/ by hand for longer than a day.
+  processed_audio_retention_days: 1
   failed_audio_retention_days: 30
-  # Hard backstop regardless of the retention_days settings above —
-  # once free disk space drops below this, oldest processed/ (then
-  # failed/, then incoming/) files are deleted immediately rather than
-  # waiting for the next age-based sweep. See audio/retention.py.
-  min_free_disk_gb: 5
+  # Last-resort backstop, not the primary defense — that's the
+  # retention_days values above. Once free disk space drops below
+  # this, oldest processed/ (then failed/, then incoming/) files are
+  # deleted immediately regardless of age. If this is what's actually
+  # keeping your disk from filling up day to day, lower
+  # processed_audio_retention_days instead of raising this number.
+  min_free_disk_gb: 10
 
 birdnet:
   database_minimum_confidence: 0.60
