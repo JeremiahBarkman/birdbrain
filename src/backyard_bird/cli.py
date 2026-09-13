@@ -97,7 +97,7 @@ def audio() -> None:
 
 @audio.command("list-devices")
 def audio_list_devices() -> None:
-    """List input (microphone) devices macOS currently exposes."""
+    """List input (microphone) devices the OS currently exposes."""
     from backyard_bird.audio.devices import list_input_devices
 
     devices = list_input_devices()

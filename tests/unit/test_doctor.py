@@ -25,8 +25,8 @@ from backyard_bird.doctor import (
 )
 
 
-def test_platform_check_fails_on_non_darwin() -> None:
-    with patch("platform.system", return_value="Linux"):
+def test_platform_check_fails_on_unsupported_os() -> None:
+    with patch("platform.system", return_value="Windows"):
         result = check_platform()
     assert result.status == "fail"
 
@@ -41,6 +41,25 @@ def test_platform_check_passes_on_apple_silicon() -> None:
     with patch("platform.system", return_value="Darwin"), patch("platform.machine", return_value="arm64"):
         result = check_platform()
     assert result.status == "pass"
+
+
+def test_platform_check_passes_on_linux_aarch64() -> None:
+    # The Raspberry Pi 4B/Ubuntu 24.04 host profile (requirements §7.1).
+    with patch("platform.system", return_value="Linux"), patch("platform.machine", return_value="aarch64"):
+        result = check_platform()
+    assert result.status == "pass"
+
+
+def test_platform_check_passes_on_linux_x86_64() -> None:
+    with patch("platform.system", return_value="Linux"), patch("platform.machine", return_value="x86_64"):
+        result = check_platform()
+    assert result.status == "pass"
+
+
+def test_platform_check_warns_on_unusual_linux_arch() -> None:
+    with patch("platform.system", return_value="Linux"), patch("platform.machine", return_value="armv7l"):
+        result = check_platform()
+    assert result.status == "warn"
 
 
 def test_python_version_passes_on_current_interpreter() -> None:
@@ -114,6 +133,14 @@ def test_audio_devices_passes_when_configured_device_found() -> None:
     assert result.status == "pass"
 
 
+def test_audio_devices_fail_message_is_linux_specific_on_linux() -> None:
+    with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]), \
+         patch("platform.system", return_value="Linux"):
+        result = check_audio_devices()
+    assert result.status == "fail"
+    assert "audio" in result.message and "macOS" not in result.message
+
+
 def test_microphone_permission_skips_when_no_devices() -> None:
     with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]):
         result = check_microphone_permission()
@@ -127,6 +154,16 @@ def test_microphone_permission_fails_when_stream_open_errors() -> None:
          patch("sounddevice.rec", side_effect=RuntimeError("PaMacCore (AUHAL): Unanticipated host error")):
         result = check_microphone_permission()
     assert result.status == "fail"
+
+
+def test_microphone_permission_fail_message_is_linux_specific_on_linux() -> None:
+    devices = [AudioDevice(index=0, name="Mic", max_input_channels=1, default_samplerate=48000.0, host_api="ALSA")]
+    with patch("backyard_bird.audio.devices.list_input_devices", return_value=devices), \
+         patch("sounddevice.rec", side_effect=RuntimeError("Device unavailable")), \
+         patch("platform.system", return_value="Linux"):
+        result = check_microphone_permission()
+    assert result.status == "fail"
+    assert "audio" in result.message.lower() and "TCC" not in result.message
 
 
 def test_microphone_permission_warns_on_complete_silence() -> None:

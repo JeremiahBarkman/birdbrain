@@ -1,4 +1,4 @@
-"""macOS input device discovery and quick microphone testing.
+"""Input device discovery and quick microphone testing (macOS/Linux).
 
 This is the only module that should import sounddevice directly, so
 the rest of the application isn't coupled to the PortAudio bindings.
@@ -23,7 +23,7 @@ class AudioDevice:
 
 
 def list_input_devices() -> list[AudioDevice]:
-    """Return every device macOS reports with at least one input channel."""
+    """Return every device PortAudio reports with at least one input channel."""
     devices = sd.query_devices()
     host_apis = sd.query_hostapis()
     result: list[AudioDevice] = []
