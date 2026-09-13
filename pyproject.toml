@@ -28,7 +28,14 @@ dependencies = [
     "pydantic>=2.5",
     "pyyaml>=6.0",
     "sounddevice>=0.4.6",
-    "numpy>=1.24",
+    # <2 is required, not incidental: tflite-runtime hasn't been rebuilt
+    # since before NumPy 2.0's ABI break (last release 2.14.0, 2023) and
+    # segfaults/AttributeErrors under numpy>=2 ("_ARRAY_API not found") -
+    # confirmed on the Raspberry Pi (2026-09-13). tensorflow (macOS)
+    # already constrains numpy<2 transitively for the same underlying
+    # reason, so this is one explicit floor for both platforms rather
+    # than relying on that being true forever.
+    "numpy>=1.24,<2",
     "click>=8.1",
     # Local status dashboard (§22). A minimal Flask app is simpler and
     # better-tested than hand-rolling HTTP routing/JSON on http.server.
