@@ -493,15 +493,60 @@ you're ready to stop starting services manually on either host, but
 kept separate from this change so Linux and macOS stay at equal
 footing rather than Linux jumping ahead.
 
-**Not yet validated:** none of this has been run on the physical Pi
-yet — only read, reasoned about, and (where unit-testable without real
-hardware) exercised in this Mac's own test suite. Before relying on it:
-run `./scripts/install.sh` on the Pi itself, confirm `bird-display
-doctor` passes (including a real microphone open, which — per the
-divergence above — should work fine over this same SSH session, unlike
-the Mac mini's mic tests), and get real BirdNET timing numbers on the
-Pi 4's CPU before assuming default concurrency (§19.1, one worker) is
-comfortably real-time the way it is on the M1.
+**Validated on the physical Pi (2026-09-13):** `./scripts/install.sh`
+run for real on `TheSource` (the Pi itself) surfaced one genuine bug
+this Mac's own test suite couldn't have caught — see "Real bug found"
+below — and, once fixed, completed cleanly: apt packages installed,
+`deadsnakes` provided Python 3.11.15, `pip install -e ".[dev]"`
+resolved `tflite-runtime` (not `tensorflow`) as intended, and
+`bird-display doctor` reported:
+
+```
+[OK  ] platform: Linux, aarch64
+[OK  ] python_version: Python 3.11.15
+[OK  ] birdnet: BirdNET v2.4 analyzed soundscape.wav in 66.7s (4 detection(s)).
+[OK  ] required_directories: All 11 data subdirectories exist under data
+[OK  ] disk_space: 94.8 GB free
+[FAIL] audio_devices: No input (microphone) devices found.
+```
+
+The `audio_devices` failure is expected, not a bug — no USB microphone
+is plugged into the Pi yet. Everything software-side that can be
+verified without a mic attached now passes.
+
+BirdNET correctly found the same 4 detections on this Pi as it did on
+the Mac mini for the identical test clip — same species, same model
+version, different (much lighter) TFLite backend. Timing is the one
+number worth tracking: **66.7s to analyze the 120s test clip**, versus
+**5.4s on the M1 Mac mini** (§29 Phase 1 validation, above) — roughly
+12x slower, but still well inside real-time for this project's default
+30-second segments (§8.2): at this ratio a 30s segment takes ~17s to
+analyze, leaving real margin before the queue could back up (§19.2's
+warning threshold is 10 minutes of backlog). Default concurrency
+(§19.1, one BirdNET worker) should still hold on the Pi 4 — but with
+far less headroom than the M1 has, so this is worth re-checking once
+continuous capture is actually running and competing with the other
+services (analyzer, dashboard, images-watch) for the same 4 GB RAM.
+CPU/RSS memory weren't captured in this run (`doctor` doesn't report
+them) the way the original Mac spike did — worth doing if tuning
+concurrency later.
+
+**Real bug found by this run, not caught by anything runnable on the
+Mac:** `pyproject.toml` declared `numpy>=1.24` with no upper bound.
+`tensorflow` (macOS) happens to transitively constrain `numpy<2`
+itself, so the Mac never surfaced this. `tflite-runtime==2.14.0` (last
+released in 2023, before NumPy 2.0's ABI break) has no such guard —
+pip resolved `numpy 2.4.6` on the Pi, and BirdNET's model load crashed
+with `AttributeError: _ARRAY_API not found`. Fixed by making
+`numpy<2` an explicit top-level constraint rather than an accident of
+tensorflow's metadata, so both platforms share one intentional floor
+instead of the Linux path being quietly unprotected.
+
+**Still open before this branch merges to `main`:** a real microphone
+plugged into the Pi and `bird-display doctor`'s `audio_devices`/
+`microphone_permission` checks passing against it (which, per the
+divergence documented above, should work directly over this same SSH
+session — no physical console needed, unlike the Mac mini).
 
 ### Data note
 
