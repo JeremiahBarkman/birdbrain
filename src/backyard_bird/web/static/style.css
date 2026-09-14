@@ -32,7 +32,15 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  max-width: 960px;
+  /* 960px was tuned before the species table grew to 8 columns
+     (thumbnail, species, detections, confidence, recording w/
+     playback + star/save buttons, first/last seen, seen-for) — on a
+     1920x1080 display that forced .table-scroll's overflow-x into
+     constant use even though the window had plenty of room. 1400px
+     comfortably fits all 8 columns without horizontal scroll on a
+     typical desktop window, while still leaving real side margins
+     rather than stretching edge-to-edge on a wide monitor. */
+  max-width: 1400px;
   margin-inline: auto;
 }
 
