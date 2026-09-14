@@ -50,7 +50,7 @@ def test_setup_happy_path_saves_location_and_single_mic(
     monkeypatch.setattr(
         setup_wizard_module,
         "geocode_location",
-        lambda query, **kwargs: GeocodeResult(45.2853, -123.1998, "Carlton, Oregon, United States"),
+        lambda query, **kwargs: GeocodeResult(39.7817, -89.6501, "Springfield, Illinois, United States"),
     )
     monkeypatch.setattr(
         devices_module, "list_input_devices", lambda: [_mic(0, "TONOR G11 USB microphone: Audio (hw:1,0)")]
@@ -59,13 +59,13 @@ def test_setup_happy_path_saves_location_and_single_mic(
     result = CliRunner().invoke(
         cli,
         ["--config", str(config_path), "setup"],
-        input="Carlton, OR\ny\ny\n",  # place, confirm location, confirm mic
+        input="Springfield, IL\ny\ny\n",  # place, confirm location, confirm mic
     )
 
     assert result.exit_code == 0, result.output
     parsed = yaml.safe_load(config_path.read_text())
-    assert parsed["location"]["latitude"] == 45.2853
-    assert parsed["location"]["longitude"] == -123.1998
+    assert parsed["location"]["latitude"] == 39.7817
+    assert parsed["location"]["longitude"] == -89.6501
     assert parsed["audio"]["device_name"] == "TONOR G11 USB microphone: Audio (hw:1,0)"
     # untouched fields survive
     assert parsed["audio"]["microphone_id"] == "backyard-mic-01"

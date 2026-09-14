@@ -15,9 +15,9 @@ from backyard_bird.setup_wizard import geocode_location, set_config_value
 
 NOMINATIM_RESPONSE = [
     {
-        "lat": "45.2853",
-        "lon": "-123.1998",
-        "display_name": "Carlton, Yamhill County, Oregon, United States",
+        "lat": "39.7817",
+        "lon": "-89.6501",
+        "display_name": "Springfield, Sangamon County, Illinois, United States",
     }
 ]
 
@@ -53,12 +53,12 @@ class _RaisingSession:
 def test_geocode_location_returns_result_on_success() -> None:
     session = _FakeSession(_FakeResponse(NOMINATIM_RESPONSE))
 
-    result = geocode_location("Carlton, OR", session=session)
+    result = geocode_location("Springfield, IL", session=session)
 
     assert result is not None
-    assert result.latitude == 45.2853
-    assert result.longitude == -123.1998
-    assert "Carlton" in result.display_name
+    assert result.latitude == 39.7817
+    assert result.longitude == -89.6501
+    assert "Springfield" in result.display_name
 
 
 def test_geocode_location_sends_a_descriptive_user_agent() -> None:
@@ -66,7 +66,7 @@ def test_geocode_location_sends_a_descriptive_user_agent() -> None:
     # silent-403 bug this project already hit once with Wikimedia.
     session = _FakeSession(_FakeResponse(NOMINATIM_RESPONSE))
 
-    geocode_location("Carlton, OR", session=session)
+    geocode_location("Springfield, IL", session=session)
 
     assert "User-Agent" in session.last_request["headers"]
     assert session.last_request["headers"]["User-Agent"]
@@ -79,11 +79,11 @@ def test_geocode_location_returns_none_when_no_results() -> None:
 
 def test_geocode_location_returns_none_on_http_error() -> None:
     session = _FakeSession(_FakeResponse({}, status=503))
-    assert geocode_location("Carlton, OR", session=session) is None
+    assert geocode_location("Springfield, IL", session=session) is None
 
 
 def test_geocode_location_returns_none_on_network_error() -> None:
-    assert geocode_location("Carlton, OR", session=_RaisingSession()) is None
+    assert geocode_location("Springfield, IL", session=_RaisingSession()) is None
 
 
 @pytest.fixture
@@ -106,23 +106,23 @@ def config_file(tmp_path: Path) -> Path:
 
 
 def test_set_config_value_replaces_target_line_only(config_file: Path) -> None:
-    ok = set_config_value(config_file, "location", "latitude", 45.2853)
+    ok = set_config_value(config_file, "location", "latitude", 39.7817)
     assert ok is True
 
     text = config_file.read_text()
-    assert "latitude: 45.2853" in text
+    assert "latitude: 39.7817" in text
     assert "longitude: -123.0" in text  # untouched
     assert "# a comment that must survive" in text  # comments preserved
     assert "timezone: America/Los_Angeles" in text  # other sections untouched
 
 
 def test_set_config_value_result_is_valid_yaml_and_round_trips(config_file: Path) -> None:
-    set_config_value(config_file, "location", "latitude", 45.2853)
-    set_config_value(config_file, "location", "longitude", -123.1998)
+    set_config_value(config_file, "location", "latitude", 39.7817)
+    set_config_value(config_file, "location", "longitude", -89.6501)
 
     parsed = yaml.safe_load(config_file.read_text())
-    assert parsed["location"]["latitude"] == 45.2853
-    assert parsed["location"]["longitude"] == -123.1998
+    assert parsed["location"]["latitude"] == 39.7817
+    assert parsed["location"]["longitude"] == -89.6501
 
 
 def test_set_config_value_quotes_a_value_containing_a_colon(config_file: Path) -> None:

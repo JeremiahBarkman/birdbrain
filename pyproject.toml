@@ -7,6 +7,7 @@ name = "backyard-bird-display"
 version = "0.1.0"
 description = "Local-first backyard bird discovery system: audio capture, BirdNET identification, and photo-frame delivery."
 readme = "README.md"
+license = {file = "LICENSE"}
 requires-python = ">=3.9,<3.12"
 dependencies = [
     "birdnetlib>=0.17",
