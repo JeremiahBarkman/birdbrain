@@ -28,12 +28,13 @@ detections from real outdoor audio (below), not a §29 phase — added
 geocodes a city/state/ZIP into `location`, lets you pick a detected
 microphone by name, wired into `install.sh`.
 **Auto-start on boot** (`bird-display services install`, below): §29
-Phase 8, done — systemd units (Linux) / launchd LaunchAgents (macOS),
-built and tested but not yet switched on for real on either the Mac or
-the Pi (that's a real boot-affecting change on your actual machines,
-left for you to trigger). Public-repo readiness (license, doc polish)
-is the last piece of the "make this easy to install for other users"
-effort, not started yet.
+Phase 8, done — fully validated live on the Pi, including surviving a
+real reboot unattended (below). Two real bugs found and fixed along
+the way (a doctor false-FAIL once capture auto-starts, and a symlink
+bug that made every service crash-loop until fixed) — see below for
+the full account. Not yet installed on the Mac. Public-repo readiness
+(license, doc polish) is the last piece of the "make this easy to
+install for other users" effort, not started yet.
 
 Implemented so far:
 
@@ -769,6 +770,22 @@ computation against a realistic symlink), and was only found because
 a state whose ambiguity (mid-restart? genuinely stuck?) should have
 been chased immediately with real systemd diagnostics rather than
 assumed transient on the first look.
+
+**Fully validated live, end to end, including a real reboot
+(2026-09-14):** with the `_venv_bin()` fix applied and `services
+install` re-run, all four services reached `active (running)` for
+real (new PIDs, correct `ExecStart`, capture correctly logging the
+resolved mic). Then the actual Phase 8 exit condition was tested for
+real, not assumed: `sudo reboot`, wait, SSH back in fresh, and check —
+without running `start_all.sh` or anything else by hand. Result: all
+four services already `active`, real new PIDs with `?` TTY (systemd-
+managed, not from any shell), and `bird-display detections today`
+showing genuine, diverse species accumulated automatically since
+boot — House Finch, Anna's Hummingbird, Canada Goose, Cedar Waxwing,
+American Goldfinch, Pine Grosbeak, Northern Flicker, American Robin —
+across roughly 70 minutes of fully unattended operation, queue clean
+throughout (`0 incoming / 0 processing / 137 processed / 0 failed`).
+This branch is ready to merge to `main`.
 
 ## Setup
 
