@@ -201,7 +201,7 @@ def check_disk_space(data_directory: Path) -> CheckResult:
 
 
 def check_audio_devices(configured_device_name: str | None = None) -> CheckResult:
-    from backyard_bird.audio.devices import list_input_devices
+    from backyard_bird.audio.devices import find_input_device, list_input_devices
 
     try:
         devices = list_input_devices()
@@ -221,7 +221,11 @@ def check_audio_devices(configured_device_name: str | None = None) -> CheckResul
         return CheckResult("audio_devices", "fail", f"No input (microphone) devices found. {hint}")
 
     names = [d.name for d in devices]
-    if configured_device_name and configured_device_name not in names:
+    # find_input_device (not a plain membership check) so this agrees with what
+    # capture_service.py would actually resolve - including its ALSA
+    # "(hw:N,M)" fallback match, so doctor doesn't warn about a device
+    # capture would in fact find fine.
+    if configured_device_name and find_input_device(configured_device_name) is None:
         return CheckResult(
             "audio_devices",
             "warn",

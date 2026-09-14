@@ -126,6 +126,16 @@ def test_audio_devices_warns_when_configured_device_not_found() -> None:
     assert result.status == "warn"
 
 
+def test_audio_devices_passes_via_alsa_hw_index_fallback() -> None:
+    # Regression: doctor must agree with find_input_device's ALSA
+    # (hw:N,M) fallback (devices.py), not just an exact-name membership
+    # check - otherwise it warns about a device capture would resolve fine.
+    devices = [AudioDevice(index=0, name="Mic (hw:3,0)", max_input_channels=1, default_samplerate=48000.0, host_api="ALSA")]
+    with patch("backyard_bird.audio.devices.list_input_devices", return_value=devices):
+        result = check_audio_devices(configured_device_name="Mic (hw:1,0)")
+    assert result.status == "pass"
+
+
 def test_audio_devices_passes_when_configured_device_found() -> None:
     devices = [AudioDevice(index=0, name="Built-in Microphone", max_input_channels=1, default_samplerate=48000.0, host_api="Core Audio")]
     with patch("backyard_bird.audio.devices.list_input_devices", return_value=devices):
