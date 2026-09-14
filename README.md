@@ -19,12 +19,10 @@ page to appear on.
 (House Finch photo cached and served by the dashboard), two providers
 (Wikimedia + iNaturalist, config-driven), four real bugs found and
 fixed along the way — see below.
-**Linux/Raspberry Pi support**: added 2026-09-13 (below), not a §29
-phase — install/doctor/dependency changes needed to run this codebase
-on Ubuntu 24.04 (aarch64) as a second host profile alongside the Mac
-mini, ahead of moving the deployment to a Raspberry Pi 4B (4GB). Not
-yet installed or run on the physical Pi — see "Not yet validated"
-below.
+**Linux/Raspberry Pi support**: done — fully validated live on the
+physical Pi 4B (4GB, Ubuntu 24.04), including real end-to-end bird
+detections from real outdoor audio (below), not a §29 phase — added
+2026-09-13/14 as a second host profile alongside the Mac mini.
 
 Implemented so far:
 
@@ -516,20 +514,22 @@ verified without a mic attached now passes.
 
 BirdNET correctly found the same 4 detections on this Pi as it did on
 the Mac mini for the identical test clip — same species, same model
-version, different (much lighter) TFLite backend. Timing is the one
-number worth tracking: **66.7s to analyze the 120s test clip**, versus
-**5.4s on the M1 Mac mini** (§29 Phase 1 validation, above) — roughly
-12x slower, but still well inside real-time for this project's default
-30-second segments (§8.2): at this ratio a 30s segment takes ~17s to
-analyze, leaving real margin before the queue could back up (§19.2's
-warning threshold is 10 minutes of backlog). Default concurrency
-(§19.1, one BirdNET worker) should still hold on the Pi 4 — but with
-far less headroom than the M1 has, so this is worth re-checking once
-continuous capture is actually running and competing with the other
-services (analyzer, dashboard, images-watch) for the same 4 GB RAM.
-CPU/RSS memory weren't captured in this run (`doctor` doesn't report
-them) the way the original Mac spike did — worth doing if tuning
-concurrency later.
+version, different (much lighter) TFLite backend. The one-off `doctor`
+check took **66.7s to analyze the 120s test clip**, versus **5.4s on
+the M1 Mac mini** (§29 Phase 1 validation, above) — roughly 12x slower
+— but that figure includes a cold model load, and overstates the real
+per-segment cost: once `analyze run` is actually running continuously
+(model loaded once, reused for every segment), real live 30-second
+segments analyzed in **~3.5s each**, not the ~17s a naive linear
+scaling from the one-off figure would suggest. Comfortably inside
+real-time with real margin before the queue could back up (§19.2's
+warning threshold is 10 minutes of backlog) — confirmed live: `queue
+status` showed `incoming 0 / processing 0 / processed 9 / failed 0`
+after several minutes of continuous capture, nothing backing up.
+Default concurrency (§19.1, one BirdNET worker) holds fine on the Pi
+4. CPU/RSS memory weren't captured the way the original Mac spike did
+— worth doing if tuning concurrency further, but not blocking given
+how much margin the 3.5s number already leaves.
 
 **Real bug found by this run, not caught by anything runnable on the
 Mac:** `pyproject.toml` declared `numpy>=1.24` with no upper bound.
@@ -542,11 +542,30 @@ with `AttributeError: _ARRAY_API not found`. Fixed by making
 tensorflow's metadata, so both platforms share one intentional floor
 instead of the Linux path being quietly unprotected.
 
-**Still open before this branch merges to `main`:** a real microphone
-plugged into the Pi and `bird-display doctor`'s `audio_devices`/
-`microphone_permission` checks passing against it (which, per the
-divergence documented above, should work directly over this same SSH
-session — no physical console needed, unlike the Mac mini).
+**Second real bug, found the same day the microphone was actually
+connected:** a Pi power-cycle (moving the device) renumbered the
+mic's ALSA hardware index from `hw:1,0` to `hw:3,0` — USB card indices
+are assigned by enumeration order at boot on Linux, unlike macOS's
+stable CoreAudio names, and PortAudio bakes that index straight into
+the device name it reports. The exact-string match in
+`find_input_device` (working as designed — §26.1's retry-with-backoff,
+never crashing) could never have recovered from this on its own: the
+configured name was permanently "not found" until someone noticed and
+re-edited `config.yaml`, which defeats §20's "recover automatically
+after reboots" specifically on this host profile. Fixed by falling
+back to a match with the trailing `(hw:N,M)` suffix stripped from both
+sides when the exact match fails — a config written against one boot's
+index now resolves fine after a later reboot renumbers it. 6 new unit
+tests; macOS names never have this suffix, so the fallback is a
+no-op there.
+
+**Fully validated live, end to end, 2026-09-14:** with the microphone
+reconnected and both bugs above fixed, `capture run` → `analyze run`
+produced genuine detections from real outdoor bird calls at Carlton,
+OR — American Robin (0.67 confidence) and Cedar Waxwing (0.57) — via
+`bird-display detections today`. Every §19.2 queue-health number was
+clean throughout (`incoming 0 / processing 0 / processed 9 / failed
+0`). This branch is ready to merge to `main`.
 
 ### Data note
 
