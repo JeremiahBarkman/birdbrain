@@ -280,3 +280,70 @@ def test_star_recording_species_with_no_recording_yet_404s(tmp_path: Path) -> No
         response = c.post(f"/api/species/{SCIENTIFIC}/recording/star", json={"approved": True})
 
     assert response.status_code == 404
+
+
+# -- reject/delete species ("kill a false detection", dashboard feature) -----
+
+
+def test_reject_species_marks_detections_and_hides_from_stats(client) -> None:
+    response = client.post(f"/api/species/{SCIENTIFIC}/reject")
+    assert response.status_code == 200
+    assert response.get_json() == {"scientific_name": SCIENTIFIC, "rejected_detections": 1}
+
+    data = client.get("/api/stats").get_json()
+    assert data["species"] == []  # dropped out entirely, not shown as a zero row
+    assert data["total_species"] == 0
+    assert data["total_detections"] == 0
+
+
+def test_reject_species_unknown_species_404s(client) -> None:
+    response = client.post("/api/species/Nonexistent species/reject")
+    assert response.status_code == 404
+
+
+def test_reject_species_does_not_delete_anything(client, tmp_path: Path) -> None:
+    client.post(f"/api/species/{SCIENTIFIC}/reject")
+
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    try:
+        count = conn.execute("SELECT COUNT(*) AS c FROM detections").fetchone()["c"]
+    finally:
+        conn.close()
+    assert count == 1  # still there, just marked rejected — nothing physically removed
+
+
+def test_delete_species_removes_detections_and_clip_file(client_with_recording, tmp_path: Path) -> None:
+    clip_path = species_clip_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
+    assert clip_path.exists()
+
+    response = client_with_recording.delete(f"/api/species/{SCIENTIFIC}")
+    assert response.status_code == 200
+    assert response.get_json() == {"scientific_name": SCIENTIFIC, "detections_deleted": 1}
+
+    assert not clip_path.exists()  # the audio file itself was removed, not just the DB row
+
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    try:
+        detection_count = conn.execute("SELECT COUNT(*) AS c FROM detections").fetchone()["c"]
+        best_recording_count = conn.execute("SELECT COUNT(*) AS c FROM best_recordings").fetchone()["c"]
+    finally:
+        conn.close()
+    assert detection_count == 0
+    assert best_recording_count == 0
+
+    data = client_with_recording.get("/api/stats").get_json()
+    assert data["species"] == []
+
+
+def test_delete_species_without_a_recording_still_works(client) -> None:
+    # No best_recordings row at all for this species (client fixture
+    # seeds a detection but no recording) — must not error just
+    # because there's no clip file to clean up.
+    response = client.delete(f"/api/species/{SCIENTIFIC}")
+    assert response.status_code == 200
+    assert response.get_json()["detections_deleted"] == 1
+
+
+def test_delete_species_unknown_species_404s(client) -> None:
+    response = client.delete("/api/species/Nonexistent species")
+    assert response.status_code == 404

@@ -244,6 +244,7 @@ def list_detections(
         params.extend([like, like])
     if not include_duplicates:
         clauses.append("d.is_duplicate = 0")
+    clauses.append("(d.review_status IS NULL OR d.review_status != 'rejected')")
 
     where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
     params.append(limit)
@@ -275,7 +276,14 @@ def list_species_summary(
     # meeting the filter just doesn't appear, rather than showing a
     # zero row, and count/avg/first-seen/last-seen all reflect only
     # the filtered detections rather than the species' full history.
-    clauses = ["d.is_duplicate = 0"]
+    #
+    # The rejected-detection exclusion is what makes reject_species_
+    # detections() (below) actually remove a species from this table:
+    # this query is entirely detection-driven (no species-level
+    # "hidden" flag exists), so a species with every detection rejected
+    # naturally produces zero grouped rows for it, same mechanism as a
+    # species with zero detections at all.
+    clauses = ["d.is_duplicate = 0", "(d.review_status IS NULL OR d.review_status != 'rejected')"]
     params: list[object] = []
     if since_utc is not None:
         clauses.append("d.detected_at_utc >= ?")
@@ -316,6 +324,67 @@ def list_species_summary(
     ]
 
 
+# -- species moderation: killing a false/erroneous species from the dashboard ---
+#
+# Two options, both scoped to the whole species (matching the
+# dashboard's species-aggregated table — there's no per-detection UI
+# to target one specific detection out of a species' many):
+#
+#   - reject: soft, reversible in principle. Marks every detection
+#     reviewed+rejected rather than removing anything; audio/history
+#     stays intact. list_species_summary/list_detections/
+#     get_overall_stats above all exclude rejected detections, which
+#     is what actually makes the species disappear from the dashboard.
+#   - delete: hard, irreversible. Physically removes every detection
+#     for the species plus its best_recordings row (whose detection_id
+#     FK would otherwise dangle) and that row's audio clip file. The
+#     species catalog row and any cached bird_images row are
+#     deliberately left alone: they're reference data, not detection
+#     records, and a real re-detection later shouldn't have to
+#     re-fetch/re-validate an image from scratch.
+#
+# Both act on species_id, not individual detection ids — callers
+# resolve scientific_name -> species_id via
+# get_species_id_by_scientific_name (below) first.
+
+
+def reject_species_detections(conn: sqlite3.Connection, species_id: int) -> int:
+    """Returns the number of detections marked rejected (0 if this
+    species has none — including an unknown/already-empty species_id,
+    which callers should have already checked for via
+    get_species_id_by_scientific_name before calling this).
+    """
+    cursor = conn.execute(
+        "UPDATE detections SET is_reviewed = 1, review_status = 'rejected' WHERE species_id = ?",
+        (species_id,),
+    )
+    return cursor.rowcount
+
+
+def delete_species_detections(conn: sqlite3.Connection, species_id: int) -> dict[str, object]:
+    """Irreversible — callers must have already confirmed with the
+    user before calling this. best_recordings is deleted first
+    specifically because its detection_id FK references a row this
+    function is about to delete; deleting child-before-parent here
+    (rather than relying on any ON DELETE CASCADE, which this schema
+    doesn't declare) is what keeps this safe under the FK enforcement
+    §11 requires (PRAGMA foreign_keys = ON).
+
+    Returns {"detections_deleted": int, "clip_path": str | None} —
+    the clip file itself isn't touched here (this module never touches
+    the filesystem — see clips.py); callers delete it after this
+    transaction commits.
+    """
+    clip_row = conn.execute(
+        "SELECT clip_path FROM best_recordings WHERE species_id = ?", (species_id,)
+    ).fetchone()
+    clip_path = clip_row["clip_path"] if clip_row is not None else None
+
+    conn.execute("DELETE FROM best_recordings WHERE species_id = ?", (species_id,))
+    cursor = conn.execute("DELETE FROM detections WHERE species_id = ?", (species_id,))
+    return {"detections_deleted": cursor.rowcount, "clip_path": clip_path}
+
+
 @dataclass(frozen=True)
 class OverallStats:
     """Headline numbers for the live dashboard (§22.1)."""
@@ -327,19 +396,24 @@ class OverallStats:
     most_recent: DetectionRow | None
 
 
+_NOT_REJECTED = "(review_status IS NULL OR review_status != 'rejected')"
+
+
 def get_overall_stats(conn: sqlite3.Connection, today_start_utc: datetime) -> OverallStats:
     total_species = conn.execute(
-        "SELECT COUNT(DISTINCT species_id) AS c FROM detections WHERE is_duplicate = 0"
+        f"SELECT COUNT(DISTINCT species_id) AS c FROM detections WHERE is_duplicate = 0 AND {_NOT_REJECTED}"
     ).fetchone()["c"]
     total_detections = conn.execute(
-        "SELECT COUNT(*) AS c FROM detections WHERE is_duplicate = 0"
+        f"SELECT COUNT(*) AS c FROM detections WHERE is_duplicate = 0 AND {_NOT_REJECTED}"
     ).fetchone()["c"]
     species_today = conn.execute(
-        "SELECT COUNT(DISTINCT species_id) AS c FROM detections WHERE is_duplicate = 0 AND detected_at_utc >= ?",
+        f"SELECT COUNT(DISTINCT species_id) AS c FROM detections "
+        f"WHERE is_duplicate = 0 AND {_NOT_REJECTED} AND detected_at_utc >= ?",
         (today_start_utc.isoformat(),),
     ).fetchone()["c"]
     detections_today = conn.execute(
-        "SELECT COUNT(*) AS c FROM detections WHERE is_duplicate = 0 AND detected_at_utc >= ?",
+        f"SELECT COUNT(*) AS c FROM detections "
+        f"WHERE is_duplicate = 0 AND {_NOT_REJECTED} AND detected_at_utc >= ?",
         (today_start_utc.isoformat(),),
     ).fetchone()["c"]
     recent = list_detections(conn, limit=1)

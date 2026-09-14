@@ -19,12 +19,14 @@ from backyard_bird.database.connection import get_connection
 from backyard_bird.database.repositories import (
     DetectionRow,
     SpeciesSummaryRow,
+    delete_species_detections,
     get_approved_images_by_scientific_name,
     get_best_recordings_by_scientific_name,
     get_overall_stats,
     get_species_id_by_scientific_name,
     list_detections,
     list_species_summary,
+    reject_species_detections,
     set_best_recording_approved,
 )
 from backyard_bird.images.cache import species_slug
@@ -160,6 +162,55 @@ def star_recording(scientific_name: str):
         conn.close()
 
     return jsonify({"scientific_name": scientific_name, "is_approved": approved})
+
+
+@bp.route("/api/species/<path:scientific_name>/reject", methods=["POST"])
+def reject_species(scientific_name: str):
+    """Soft "kill a false detection" (dashboard action, added at the
+    user's request): marks every detection for this species reviewed +
+    rejected rather than removing anything — reversible in principle,
+    audio/history stays intact. The species then drops out of the
+    dashboard (list_species_summary/get_overall_stats/list_detections
+    all exclude rejected detections) without any data actually being
+    destroyed. The client is expected to have already confirmed with
+    the user before calling this.
+    """
+    conn = _connect()
+    try:
+        species_id = get_species_id_by_scientific_name(conn, scientific_name)
+        if species_id is None:
+            return jsonify({"error": "unknown species"}), 404
+        with conn:
+            affected = reject_species_detections(conn, species_id)
+    finally:
+        conn.close()
+
+    return jsonify({"scientific_name": scientific_name, "rejected_detections": affected})
+
+
+@bp.route("/api/species/<path:scientific_name>", methods=["DELETE"])
+def delete_species(scientific_name: str):
+    """Hard "kill a false detection" (dashboard action, added at the
+    user's request): permanently removes every detection for this
+    species and its best-recording clip. Irreversible — the client is
+    expected to have already confirmed with the user, with wording
+    that makes the permanence clear, before calling this.
+    """
+    conn = _connect()
+    try:
+        species_id = get_species_id_by_scientific_name(conn, scientific_name)
+        if species_id is None:
+            return jsonify({"error": "unknown species"}), 404
+        with conn:
+            result = delete_species_detections(conn, species_id)
+    finally:
+        conn.close()
+
+    clip_path = result["clip_path"]
+    if clip_path:
+        Path(clip_path).unlink(missing_ok=True)
+
+    return jsonify({"scientific_name": scientific_name, "detections_deleted": result["detections_deleted"]})
 
 
 @bp.route("/api/stats")

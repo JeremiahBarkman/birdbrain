@@ -356,6 +356,49 @@ td .scientific {
   color: #6b4e00;
 }
 
+.row-actions {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.reject-btn,
+.delete-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-muted);
+  cursor: pointer;
+  font-size: 0.85rem;
+  line-height: 1;
+}
+
+.reject-btn:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* Delete hovers red rather than the page's usual accent green —
+   the one action here that's actually irreversible should look
+   distinct from every other (reversible) control on the page. */
+.delete-btn:hover {
+  background: #fbe4e1;
+  color: #b3261e;
+  border-color: #e8a29b;
+}
+
+@media (prefers-color-scheme: dark) {
+  .delete-btn:hover {
+    background: #3a201e;
+    color: #f2a29b;
+    border-color: #5c332f;
+  }
+}
+
 .show-more-btn {
   display: block;
   width: 100%;
@@ -552,6 +595,15 @@ td .scientific {
   #species-table td.col-seen-for::before {
     content: "Seen for";
     color: var(--text-muted);
+  }
+
+  /* Full-width row of its own, no label — two self-explanatory icon
+     buttons (title attributes carry the detail) don't need the
+     label/value pairing the stat cells above use. */
+  #species-table td.col-actions {
+    flex: 1 1 100%;
+    display: flex;
+    justify-content: flex-end;
   }
 
   /* Full-width row of its own, not the 45%-paired layout above — an

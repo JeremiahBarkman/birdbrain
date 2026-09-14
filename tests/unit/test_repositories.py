@@ -6,6 +6,7 @@ import pytest
 
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
+    delete_species_detections,
     find_audio_segment_by_file_path,
     get_best_recording_confidence,
     get_best_recordings_by_scientific_name,
@@ -20,6 +21,7 @@ from backyard_bird.database.repositories import (
     list_species_summary,
     mark_audio_segment_completed,
     mark_audio_segment_failed,
+    reject_species_detections,
     reset_audio_segment_to_pending,
     set_best_recording_approved,
     upsert_best_recording,
@@ -384,3 +386,61 @@ def test_get_species_id_by_scientific_name(conn: sqlite3.Connection) -> None:
     species_id = get_or_create_species(conn, "Poecile atricapillus", "Black-capped Chickadee")
     assert get_species_id_by_scientific_name(conn, "Poecile atricapillus") == species_id
     assert get_species_id_by_scientific_name(conn, "Nonexistent species") is None
+
+
+def test_reject_species_detections_marks_all_and_hides_from_summary(conn: sqlite3.Connection) -> None:
+    species_id, _ = _insert_species_and_detection(conn, 0.60)
+    with conn:
+        second_detection_id = insert_detection(
+            conn, _insert_segment(conn, "incoming/b.wav"), species_id,
+            datetime(2026, 8, 17, 7, 0, 0, tzinfo=timezone.utc), 5.0, 8.0, 0.70, 1.0, None, None, False, None,
+        )
+    assert second_detection_id  # sanity: two real detections for this species now
+
+    with conn:
+        affected = reject_species_detections(conn, species_id)
+    assert affected == 2
+
+    rows = conn.execute(
+        "SELECT is_reviewed, review_status FROM detections WHERE species_id = ?", (species_id,)
+    ).fetchall()
+    assert all(r["is_reviewed"] == 1 and r["review_status"] == "rejected" for r in rows)
+    assert list_species_summary(conn) == []  # dropped out, not shown as a zero row
+    assert list_detections(conn) == []
+
+
+def test_reject_species_detections_returns_zero_for_unknown_species(conn: sqlite3.Connection) -> None:
+    with conn:
+        assert reject_species_detections(conn, 999) == 0
+
+
+def test_delete_species_detections_removes_detections_and_best_recording(conn: sqlite3.Connection) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.60)
+    with conn:
+        upsert_best_recording(conn, species_id, detection_id, 0.60, "clip.wav")
+
+    with conn:
+        result = delete_species_detections(conn, species_id)
+
+    assert result == {"detections_deleted": 1, "clip_path": "clip.wav"}
+    remaining_detections = conn.execute("SELECT COUNT(*) AS c FROM detections").fetchone()["c"]
+    remaining_best_recordings = conn.execute("SELECT COUNT(*) AS c FROM best_recordings").fetchone()["c"]
+    assert remaining_detections == 0
+    assert remaining_best_recordings == 0
+    # species catalog row itself is deliberately untouched
+    assert get_species_id_by_scientific_name(conn, "Poecile atricapillus") == species_id
+
+
+def test_delete_species_detections_without_a_best_recording(conn: sqlite3.Connection) -> None:
+    species_id, _ = _insert_species_and_detection(conn, 0.60)
+
+    with conn:
+        result = delete_species_detections(conn, species_id)
+
+    assert result == {"detections_deleted": 1, "clip_path": None}
+
+
+def test_delete_species_detections_for_unknown_species_is_a_no_op(conn: sqlite3.Connection) -> None:
+    with conn:
+        result = delete_species_detections(conn, 999)
+    assert result == {"detections_deleted": 0, "clip_path": None}

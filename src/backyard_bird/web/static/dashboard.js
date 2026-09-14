@@ -135,6 +135,24 @@ function recordingCellHtml(recording, scientificName) {
     </div>`;
 }
 
+function actionsCellHtml(scientificName) {
+  return `
+    <div class="row-actions">
+      <button
+        class="reject-btn"
+        type="button"
+        data-scientific="${scientificName}"
+        title="Reject: hide this species (its detections stay in the database, marked rejected)"
+      >🚫</button>
+      <button
+        class="delete-btn"
+        type="button"
+        data-scientific="${scientificName}"
+        title="Delete permanently: removes every detection and recording for this species — cannot be undone"
+      >🗑️</button>
+    </div>`;
+}
+
 function renderStats(data) {
   document.getElementById("stat-total-species").textContent = data.total_species;
   document.getElementById("stat-total-detections").textContent = data.total_detections;
@@ -174,8 +192,8 @@ function renderSpeciesTable() {
 
   if (!currentSpecies.length) {
     tbody.innerHTML = filtersActive()
-      ? '<tr><td colspan="8">No species match these filters.</td></tr>'
-      : '<tr><td colspan="8">No species detected yet.</td></tr>';
+      ? '<tr><td colspan="9">No species match these filters.</td></tr>'
+      : '<tr><td colspan="9">No species detected yet.</td></tr>';
     showMoreBtn.hidden = true;
     return;
   }
@@ -198,6 +216,7 @@ function renderSpeciesTable() {
         <td class="col-first-seen">${formatLocalTime(s.first_detected_at_utc)}</td>
         <td class="col-last-seen">${formatLocalTime(s.last_detected_at_utc)}</td>
         <td class="col-seen-for">${formatDuration(s.duration_seen_seconds)}</td>
+        <td class="col-actions">${actionsCellHtml(s.scientific_name)}</td>
       </tr>`
     )
     .join("");
@@ -293,6 +312,61 @@ document.body.addEventListener("click", async (event) => {
     console.error("star toggle failed:", err);
   }
   poll(); // reconcile immediately rather than waiting up to POLL_INTERVAL_MS
+});
+
+// Reject/delete ("kill a false detection", user-requested): both
+// require an explicit confirm() before touching the server — the two
+// messages are deliberately different, since only delete actually
+// destroys anything (reject just hides the species; its detections
+// stay in the database, marked rejected). Not optimistic like the
+// star toggle above: this changes what rows exist at all, so wait for
+// the server's response before re-polling rather than guessing.
+document.body.addEventListener("click", async (event) => {
+  const rejectBtn = event.target.closest(".reject-btn");
+  const deleteBtn = event.target.closest(".delete-btn");
+  if (!rejectBtn && !deleteBtn) return;
+
+  const scientificName = (rejectBtn || deleteBtn).dataset.scientific;
+  const species = currentSpecies.find((s) => s.scientific_name === scientificName);
+  const commonName = species ? species.common_name : scientificName;
+
+  if (rejectBtn) {
+    const confirmed = confirm(
+      `Reject ${commonName}?\n\nIt will disappear from this table. Its detections stay in the ` +
+        `database, marked rejected — nothing is deleted.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/species/${encodeURIComponent(scientificName)}/reject`, {
+        method: "POST",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (err) {
+      console.error("reject species failed:", err);
+      alert(`Could not reject ${commonName} — see the browser console for details.`);
+      return;
+    }
+  } else {
+    const confirmed = confirm(
+      `Permanently delete ${commonName}?\n\nThis removes every detection and recording for this ` +
+        `species from the database. This cannot be undone.`
+    );
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/species/${encodeURIComponent(scientificName)}`, {
+        method: "DELETE",
+      });
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    } catch (err) {
+      console.error("delete species failed:", err);
+      alert(`Could not delete ${commonName} — see the browser console for details.`);
+      return;
+    }
+  }
+
+  poll(); // reflect the removal immediately rather than waiting up to POLL_INTERVAL_MS
 });
 
 document.getElementById("image-modal").addEventListener("click", (event) => {
