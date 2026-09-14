@@ -1346,8 +1346,8 @@ http://127.0.0.1:8765
 
 The dashboard should display:
 
-- Microphone status
-- Current capture state
+- Microphone status — **done, 2026-09-14**, plus two additions beyond this list: a live input-level meter and a "listen live" button streaming real outdoor audio to the browser (both user-requested; see README's dated implementation note for the live-audio relay architecture this needed — the dashboard can't open the microphone itself, since ALSA only allows the capture process to hold the device, confirmed live on the Pi, §31.1)
+- Current capture state — covered by the same status above (capturing/stopped/error)
 - Last completed segment
 - Analysis queue depth
 - Last successful detection

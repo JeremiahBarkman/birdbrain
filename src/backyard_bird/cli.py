@@ -180,7 +180,11 @@ def capture_run(ctx: click.Context, max_segments: int | None) -> None:
     )
 
     incoming_dir = app_config.system.data_directory / "audio" / "incoming"
-    service = CaptureService(app_config.audio, incoming_dir)
+    status_path = app_config.system.data_directory / "run" / "mic_status.json"
+    live_monitor_port = app_config.audio.live_monitor_port if app_config.audio.enable_live_monitor else None
+    service = CaptureService(
+        app_config.audio, incoming_dir, status_path=status_path, live_monitor_port=live_monitor_port
+    )
 
     def _handle_signal(signum: int, frame: object) -> None:
         click.echo("\nStopping capture...")

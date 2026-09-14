@@ -12,6 +12,15 @@ The realtime PortAudio callback (`_on_audio`) only ever copies data
 into a queue — all segmenting, file I/O, and retry logic happens on
 the calling thread in `run()`, so a slow disk or a full queue can
 never block or glitch the audio callback itself.
+
+Also writes a live mic-status/level file (audio/levels.py) roughly
+once a second, for the dashboard's live level meter (user request,
+2026-09-14) — status_path is optional so this is a no-op for any
+caller/test that doesn't pass one, same behavior as before this
+existed. Same optionality for the live-monitor audio relay
+(audio/live_monitor.py, same request): live_monitor_port is optional,
+and broadcasting to it is wrapped so a failure there can never affect
+capture itself.
 """
 from __future__ import annotations
 
@@ -27,6 +36,8 @@ import numpy as np
 import sounddevice as sd
 
 from backyard_bird.audio.devices import find_input_device
+from backyard_bird.audio.levels import MicLevel, compute_level, write_mic_status
+from backyard_bird.audio.live_monitor import LiveMonitorServer, start_live_monitor_server
 from backyard_bird.audio.retention import enforce_disk_space_floor, sweep_incoming
 from backyard_bird.audio.segmenter import AudioSegmenter, Segment, format_segment_filename
 from backyard_bird.config import AudioConfig
@@ -37,6 +48,7 @@ _QUEUE_MAX_CHUNKS = 2000  # generous backpressure cap; see _on_audio
 _DEVICE_PRESENCE_CHECK_SECONDS = 5.0
 _RETENTION_SWEEP_INTERVAL_SECONDS = 3600.0
 _RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
+_STATUS_WRITE_INTERVAL_SECONDS = 1.0  # matches the dashboard's ~1x/second poll (user request)
 
 
 class CaptureService:
@@ -47,13 +59,40 @@ class CaptureService:
         audio_config: AudioConfig,
         incoming_dir: Path,
         microphone_id: str | None = None,
+        status_path: Path | None = None,
+        live_monitor_port: int | None = None,
     ) -> None:
         self.config = audio_config
         self.incoming_dir = incoming_dir
         self.microphone_id = microphone_id or audio_config.microphone_id
+        # Optional: existing callers/tests that don't pass status_path
+        # just get no live-status reporting, same behavior as before
+        # this feature existed.
+        self.status_path = status_path
+        # Same optionality for the live-monitor relay — None (the
+        # default, and what a disabled audio.enable_live_monitor
+        # resolves to at the CLI layer) means this feature simply
+        # doesn't exist for this instance.
+        self.live_monitor_port = live_monitor_port
+        self._live_monitor_server: LiveMonitorServer | None = None
         self._stop_event = threading.Event()
         self._chunk_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=_QUEUE_MAX_CHUNKS)
         self._last_retention_sweep = 0.0
+        self._last_status_write = 0.0
+
+    def _write_status(self, status: str, level: MicLevel | None = None, error_message: str | None = None) -> None:
+        if self.status_path is None:
+            return
+        try:
+            write_mic_status(
+                self.status_path,
+                device_name=self.config.device_name,
+                status=status,
+                level=level,
+                error_message=error_message,
+            )
+        except OSError as exc:  # noqa: BLE001 — status reporting must never affect capture itself
+            logger.warning("mic_status_write_failed", extra={"event": "mic_status_write_failed", "error": str(exc)})
 
     def stop(self) -> None:
         self._stop_event.set()
@@ -69,6 +108,15 @@ class CaptureService:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         segments_written = 0
         attempt = 0
+
+        # Started once for the service's whole lifetime, not per
+        # reconnect attempt below — it's independent of any particular
+        # PortAudio stream instance, just relaying whatever chunks
+        # happen to flow through. Best-effort: None on failure (e.g.
+        # the port's already in use) silently disables this feature
+        # without affecting capture itself (see live_monitor.py).
+        if self.live_monitor_port is not None:
+            self._live_monitor_server = start_live_monitor_server(self.live_monitor_port)
 
         while not self._stop_event.is_set():
             try:
@@ -97,6 +145,7 @@ class CaptureService:
                     extra={"event": "capture_error", "error": str(exc)},
                     exc_info=True,
                 )
+                self._write_status("error", error_message=str(exc))
                 if self._stop_event.is_set():
                     break
                 delay = _RECONNECT_BACKOFF_SECONDS[min(attempt, len(_RECONNECT_BACKOFF_SECONDS) - 1)]
@@ -107,10 +156,16 @@ class CaptureService:
                 )
                 self._stop_event.wait(delay)
 
+        if self._live_monitor_server is not None:
+            self._live_monitor_server.shutdown_clients()
+            self._live_monitor_server.shutdown()
+            self._live_monitor_server.server_close()
+
         logger.info(
             "capture_stopped",
             extra={"event": "capture_stopped", "segments_written": segments_written},
         )
+        self._write_status("stopped")
         return segments_written
 
     # -- internals ---------------------------------------------------
@@ -156,6 +211,7 @@ class CaptureService:
             blocksize=blocksize,
             callback=self._on_audio,
         ):
+            self._write_status("capturing")
             last_presence_check = time.monotonic()
             while not self._stop_event.is_set():
                 now = time.monotonic()
@@ -185,6 +241,19 @@ class CaptureService:
                     chunk = self._chunk_queue.get(timeout=1.0)
                 except queue.Empty:
                     continue
+
+                if now - self._last_status_write >= _STATUS_WRITE_INTERVAL_SECONDS:
+                    self._last_status_write = now
+                    self._write_status("capturing", level=compute_level(chunk))
+
+                if self._live_monitor_server is not None and self._live_monitor_server.has_clients():
+                    try:
+                        self._live_monitor_server.broadcast(chunk.astype(np.int16).tobytes())
+                    except Exception as exc:  # noqa: BLE001 — live monitoring must never affect capture
+                        logger.warning(
+                            "live_monitor_broadcast_failed",
+                            extra={"event": "live_monitor_broadcast_failed", "error": str(exc)},
+                        )
 
                 for segment in segmenter.push(chunk):
                     self._write_segment(segment)

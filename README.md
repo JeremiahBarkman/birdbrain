@@ -32,8 +32,18 @@ Phase 8, done — fully validated live on the Pi, including surviving a
 real reboot unattended (below). Two real bugs found and fixed along
 the way (a doctor false-FAIL once capture auto-starts, and a symlink
 bug that made every service crash-loop until fixed) — see below for
-the full account. Not yet installed on the Mac. Public-repo readiness
-(license, doc polish) is the last piece of the "make this easy to
+the full account. Not yet installed on the Mac.
+**Reject/delete false detections** (dashboard, user-requested): done —
+soft (reversible) and hard (permanent) options, both behind a
+confirm(), on `species-moderation` (unmerged; needs your real
+confirmation on a real detection before merging — see that branch).
+**Live mic status, level meter, and "Listen Live"** (dashboard,
+user-requested, below): done — a new local audio relay inside
+capture_service.py (the only process that can hold the mic, since
+ALSA only allows one), proxied by the dashboard. Verified live on the
+Mac as far as this Mac's missing microphone allows; the real live-audio
+happy path still needs the Pi. Public-repo readiness (license, doc
+polish) remains the last piece of the original "make this easy to
 install for other users" effort, not started yet.
 
 Implemented so far:
@@ -786,6 +796,88 @@ American Goldfinch, Pine Grosbeak, Northern Flicker, American Robin —
 across roughly 70 minutes of fully unattended operation, queue clean
 throughout (`0 incoming / 0 processing / 137 processed / 0 failed`).
 This branch is ready to merge to `main`.
+
+### Live mic status, level meter, and "Listen Live" (2026-09-14)
+
+User-requested: mic detection info and a live level monitor near the
+top of the dashboard, plus a button to actually hear what's happening
+outside right now. Closes part of §22.1's original dashboard spec
+("Microphone status," "Current capture state") that had simply never
+been built, and adds two things beyond that literal list — a level
+meter and true live audio — at the user's request.
+
+**The real architectural constraint this ran into immediately:** the
+dashboard is a separate process from capture, and on Linux, ALSA's raw
+`hw:N,M` device nodes only allow *one* process to hold the microphone
+at all — confirmed live on the Pi earlier tonight (the ALSA-
+exclusivity finding above). So the dashboard flatly cannot open the
+mic itself for a level reading or a live stream. Both features had to
+be built as: capture_service.py (the one process that already owns the
+device) produces the data, and the dashboard relays/proxies it.
+
+**Level meter** — the simpler half, polled ~1x/second per the chosen
+design (plain `fetch()`+`setInterval`, no WebSockets/SSE, matching
+this project's existing polling philosophy): `audio/levels.py`
+computes a peak level from each captured chunk and writes it to a
+small JSON status file (`data/run/mic_status.json`), atomically
+(temp+rename, §8.4's pattern), roughly once a second.
+`GET /api/mic-status` reads it, treating a missing/malformed/stale
+(>5s old — capture crashed or never started) file as "unknown" rather
+than erroring. Deliberately a file, not the `service_health` table
+§12.10 describes — that table doesn't actually exist yet (no migration
+ever created it) and is designed for once-a-minute-per-service
+snapshots anyway, not sub-second data from one specific service.
+
+**Real bug caught by its own test:** `np.abs()` on a raw int16 chunk
+containing `-32768` (a real, valid sample — silence-adjacent audio can
+hit it) overflows, since `+32768` isn't representable in int16 and
+two's-complement wraps it. Fixed by upcasting to int32 before `abs()`.
+Found because the test suite deliberately included that exact edge
+value, not by code review.
+
+**Live audio** — the bigger half: `audio/live_monitor.py` gives
+capture_service.py a small `127.0.0.1`-only TCP relay
+(`socketserver.ThreadingTCPServer`, stdlib only, no new dependency).
+Every captured chunk is broadcast to whichever clients are currently
+connected; each gets its own small bounded queue so one slow listener
+can only ever glitch *its own* audio, never affect capture, the
+analyzer, or any other listener (same drop-oldest-on-full philosophy
+as the main capture queue). If the port can't be bound, the whole
+feature just silently doesn't exist for that run — live monitoring
+must never be able to prevent capture from working, the same principle
+CLAUDE.md already states for images/frame delivery.
+
+`GET /api/monitor/live` (Flask) connects to that local relay on
+request and streams the bytes back as a live, indefinite-length WAV:
+a plain 44-byte PCM header (`audio/wav_stream.py`) with the RIFF/data
+chunk sizes set to `0xFFFFFFFF` instead of a real byte count — the
+standard trick for streaming audio through a container format that
+normally wants to know the length upfront. Verified against Python's
+own `wave` reader (a real WAV parser, not just "bytes that look
+right") before trusting it. The dashboard's "🔊 Listen Live" button
+toggles an `<audio>` element's `src`; stopping clears `src` and calls
+`load()` rather than just `pause()`, since that's what actually aborts
+the underlying connection and lets the relay notice the listener is
+gone.
+
+`audio.enable_live_monitor: false` turns the whole thing off. Worth
+knowing if this is ever revisited: streaming raw outdoor audio is a
+meaningfully bigger privacy/security exposure than aggregate detection
+counts, if the dashboard is ever opened to a LAN with untrusted
+devices on it — §23.3 still has no authentication by design/prototype-
+status decision (see the LAN access notes above).
+
+35 new tests across `test_levels.py`, `test_live_monitor.py` (real
+localhost sockets, not mocked — this module's whole job is socket
+plumbing), `test_wav_stream.py`, and the `capture_service.py`/
+`test_web.py` additions, including one real end-to-end test that
+connects an actual socket client to a real `CaptureService` instance
+and confirms it receives the exact bytes being captured. Verified live
+against the real running Mac dashboard (the `/api/monitor/live` 503
+path, since no mic is connected to this Mac right now) — the actual
+happy path (real audio, a real listener hearing real outdoor sound)
+still needs verification on the Pi, where a microphone is actually
+connected.
 
 ## Setup
 

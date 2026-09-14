@@ -12,6 +12,19 @@
     <p id="last-updated">Loading…</p>
   </header>
 
+  <section class="mic-status" aria-label="Microphone status">
+    <div class="mic-status-row">
+      <span class="mic-status-dot" id="mic-status-dot"></span>
+      <span id="mic-status-text">Checking microphone…</span>
+      <span class="mic-status-device" id="mic-status-device"></span>
+      <button id="live-monitor-btn" class="filter-btn mic-status-listen" type="button">🔊 Listen Live</button>
+    </div>
+    <div class="level-meter" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100">
+      <div class="level-meter-fill" id="level-meter-fill"></div>
+    </div>
+    <audio id="live-monitor-audio" hidden></audio>
+  </section>
+
   <section class="summary-grid">
     <div class="stat-card">
       <div class="stat-value" id="stat-total-species">–</div>

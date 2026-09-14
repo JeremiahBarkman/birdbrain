@@ -4,6 +4,11 @@
 // poll is indistinguishable from true real-time here, with far less
 // moving infrastructure.
 const POLL_INTERVAL_MS = 5000;
+// Live mic level meter (user request, 2026-09-14) is polled separately
+// from — and faster than — the main stats poll: it's a much smaller,
+// cheaper payload (a status-file read, not a SQLite query), and a
+// meter that only refreshed every 5s wouldn't read as "live."
+const MIC_STATUS_POLL_INTERVAL_MS = 1000;
 const SPECIES_PAGE_SIZE = 10;
 const SPECIES_PAGE_INCREMENT = 20;
 
@@ -379,5 +384,88 @@ document.addEventListener("keydown", (event) => {
   if (event.key === "Escape") closeImageModal();
 });
 
+// Live mic status + level meter (user request, 2026-09-14). Polled
+// independently of poll()/renderStats() above — see the interval
+// constant's comment for why.
+function renderMicStatus(data) {
+  const dot = document.getElementById("mic-status-dot");
+  const text = document.getElementById("mic-status-text");
+  const device = document.getElementById("mic-status-device");
+  const fill = document.getElementById("level-meter-fill");
+
+  dot.classList.remove("is-capturing", "is-error");
+  if (data.status === "capturing") {
+    dot.classList.add("is-capturing");
+    text.textContent = "Capturing";
+  } else if (data.status === "error") {
+    dot.classList.add("is-error");
+    text.textContent = data.error_message ? `Error: ${data.error_message}` : "Error";
+  } else if (data.status === "stopped") {
+    text.textContent = "Not running";
+  } else {
+    text.textContent = "No live data";
+  }
+  device.textContent = data.device_name || "";
+
+  const percent = data.peak_percent ?? 0;
+  fill.style.width = `${percent}%`;
+  fill.classList.remove("is-loud", "is-clipping");
+  if (percent >= 90) fill.classList.add("is-clipping");
+  else if (percent >= 70) fill.classList.add("is-loud");
+}
+
+async function pollMicStatus() {
+  try {
+    const response = await fetch("/api/mic-status");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderMicStatus(await response.json());
+  } catch (err) {
+    console.error("mic status poll failed:", err);
+  }
+}
+
+// "Listen Live" (user request, 2026-09-14): toggles playback of the
+// real live audio stream at /api/monitor/live. Stopping does more
+// than pause() — clearing src and calling load() actually aborts the
+// underlying connection, which is what tells capture_service.py's
+// relay this client is gone (see live_monitor.py) rather than leaving
+// a phantom listener it keeps broadcasting to.
+const liveMonitorBtn = document.getElementById("live-monitor-btn");
+const liveMonitorAudio = document.getElementById("live-monitor-audio");
+let liveMonitorActive = false;
+
+function stopLiveMonitor() {
+  liveMonitorAudio.pause();
+  liveMonitorAudio.removeAttribute("src");
+  liveMonitorAudio.load();
+  liveMonitorActive = false;
+  liveMonitorBtn.textContent = "🔊 Listen Live";
+  liveMonitorBtn.classList.remove("active");
+}
+
+liveMonitorBtn.addEventListener("click", () => {
+  if (liveMonitorActive) {
+    stopLiveMonitor();
+    return;
+  }
+  liveMonitorAudio.src = "/api/monitor/live";
+  liveMonitorAudio.play().catch((err) => {
+    console.error("live monitor playback failed:", err);
+    alert("Could not start the live audio monitor — see the browser console for details.");
+    stopLiveMonitor();
+  });
+  liveMonitorActive = true;
+  liveMonitorBtn.textContent = "⏹ Stop Listening";
+  liveMonitorBtn.classList.add("active");
+});
+
+liveMonitorAudio.addEventListener("error", () => {
+  if (!liveMonitorActive) return; // expected right after we clear src ourselves on stop
+  console.error("live monitor stream error");
+  stopLiveMonitor();
+});
+
 poll();
 setInterval(poll, POLL_INTERVAL_MS);
+pollMicStatus();
+setInterval(pollMicStatus, MIC_STATUS_POLL_INTERVAL_MS);

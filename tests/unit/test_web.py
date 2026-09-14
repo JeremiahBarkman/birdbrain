@@ -99,6 +99,19 @@ def test_index_page_includes_image_popup_markup(client) -> None:
     assert b'id="image-modal-img"' in response.data
 
 
+def test_index_page_includes_mic_status_markup(client) -> None:
+    # Regression check for the live mic status/level meter feature:
+    # the elements dashboard.js's pollMicStatus()/renderMicStatus()
+    # wire up must actually be present in the rendered page.
+    response = client.get("/")
+    assert b'id="mic-status-dot"' in response.data
+    assert b'id="mic-status-text"' in response.data
+    assert b'id="mic-status-device"' in response.data
+    assert b'id="level-meter-fill"' in response.data
+    assert b'id="live-monitor-btn"' in response.data
+    assert b'id="live-monitor-audio"' in response.data
+
+
 def test_api_stats_reports_seeded_detection(client) -> None:
     response = client.get("/api/stats")
     assert response.status_code == 200
@@ -347,3 +360,134 @@ def test_delete_species_without_a_recording_still_works(client) -> None:
 def test_delete_species_unknown_species_404s(client) -> None:
     response = client.delete("/api/species/Nonexistent species")
     assert response.status_code == 404
+
+
+# -- live mic status/level (dashboard meter, user-requested feature) --------
+
+
+def test_mic_status_unknown_when_no_status_file(client) -> None:
+    response = client.get("/api/mic-status")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["status"] == "unknown"
+    assert data["peak_percent"] is None
+
+
+def test_mic_status_reports_real_capture_data(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path, with_image=False)
+    from backyard_bird.audio.levels import MicLevel, write_mic_status
+
+    write_mic_status(
+        tmp_path / "run" / "mic_status.json",
+        device_name="TONOR G11 USB microphone",
+        status="capturing",
+        level=MicLevel(peak_percent=42.5, peak_dbfs=-7.4),
+    )
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/mic-status")
+
+    data = response.get_json()
+    assert data["status"] == "capturing"
+    assert data["device_name"] == "TONOR G11 USB microphone"
+    assert data["peak_percent"] == 42.5
+    assert data["peak_dbfs"] == -7.4
+
+
+# -- live audio monitor (dashboard "listen live" button) --------------------
+
+
+def _fake_relay_server(payload: bytes):
+    """A minimal real local TCP server standing in for
+    capture_service.py's live-monitor relay: accepts exactly one
+    connection, sends `payload`, then closes. Runs in a background
+    thread; returns (thread, port).
+    """
+    import socket
+    import threading
+
+    server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    server_socket.bind(("127.0.0.1", 0))
+    server_socket.listen(1)
+    port = server_socket.getsockname()[1]
+
+    def _serve() -> None:
+        conn, _ = server_socket.accept()
+        try:
+            conn.sendall(payload)
+        finally:
+            conn.close()
+            server_socket.close()
+
+    thread = threading.Thread(target=_serve, daemon=True)
+    thread.start()
+    return thread, port
+
+
+def test_monitor_live_streams_wav_header_then_relayed_bytes(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path, with_image=False)
+    thread, port = _fake_relay_server(b"fake-pcm-audio-bytes")
+
+    config = _app_config(tmp_path)
+    config.audio.live_monitor_port = port
+    config.audio.enable_live_monitor = True
+    app = create_app(config)
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/monitor/live")
+
+    assert response.status_code == 200
+    assert response.mimetype == "audio/wav"
+    body = response.get_data()
+    assert body[:4] == b"RIFF"
+    assert body.endswith(b"fake-pcm-audio-bytes")
+    thread.join(timeout=5)
+
+
+def test_monitor_live_returns_503_when_relay_is_unreachable(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path, with_image=False)
+    config = _app_config(tmp_path)
+    config.audio.live_monitor_port = 1  # nothing listens on port 1
+    config.audio.enable_live_monitor = True
+    app = create_app(config)
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/monitor/live")
+
+    assert response.status_code == 503
+
+
+def test_monitor_live_returns_404_when_disabled(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path, with_image=False)
+    config = _app_config(tmp_path)
+    config.audio.enable_live_monitor = False
+    app = create_app(config)
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/monitor/live")
+
+    assert response.status_code == 404
+
+
+def test_mic_status_reports_stale_data_as_unknown(tmp_path: Path) -> None:
+    # capture crashed/was killed a while ago — must not keep showing a
+    # frozen "capturing" reading forever (see levels.py's STALE_AFTER_SECONDS).
+    import json
+    from datetime import datetime, timedelta, timezone as tz
+
+    from backyard_bird.audio.levels import STALE_AFTER_SECONDS
+
+    status_path = tmp_path / "run" / "mic_status.json"
+    status_path.parent.mkdir(parents=True)
+    stale_time = datetime.now(tz.utc) - timedelta(seconds=STALE_AFTER_SECONDS + 5)
+    status_path.write_text(
+        json.dumps({"device_name": "Mic", "status": "capturing", "peak_percent": 10.0, "peak_dbfs": -20.0,
+                    "error_message": None, "updated_at_utc": stale_time.isoformat()})
+    )
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/mic-status")
+
+    assert response.get_json()["status"] == "unknown"

@@ -25,6 +25,11 @@ def create_app(app_config: AppConfig) -> Flask:
     app.config["TIMEZONE"] = app_config.system.timezone
     app.config["IMAGES_ROOT"] = data_directory / "images"
     app.config["AUDIO_CLIPS_ROOT"] = data_directory / "audio" / "best_clips"
+    app.config["MIC_STATUS_PATH"] = data_directory / "run" / "mic_status.json"
+    app.config["LIVE_MONITOR_ENABLED"] = app_config.audio.enable_live_monitor
+    app.config["LIVE_MONITOR_PORT"] = app_config.audio.live_monitor_port
+    app.config["AUDIO_SAMPLE_RATE"] = app_config.audio.sample_rate
+    app.config["AUDIO_CHANNELS"] = app_config.audio.channels
 
     from backyard_bird.web.routes import bp
 

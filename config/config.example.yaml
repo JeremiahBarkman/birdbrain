@@ -37,6 +37,14 @@ audio:
   # keeping your disk from filling up day to day, lower
   # processed_audio_retention_days instead of raising this number.
   min_free_disk_gb: 10
+  # Live "listen outside right now" dashboard button: capture relays a
+  # copy of its audio over a local-only TCP port for the dashboard to
+  # proxy. Set to false to disable entirely — worth doing if the
+  # dashboard is ever opened to a LAN with untrusted devices on it,
+  # since there's no authentication (§23.3) and raw outdoor audio is a
+  # bigger exposure than aggregate detection counts.
+  enable_live_monitor: true
+  live_monitor_port: 8766
 
 birdnet:
   database_minimum_confidence: 0.60

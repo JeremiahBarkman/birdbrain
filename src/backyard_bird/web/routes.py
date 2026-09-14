@@ -9,12 +9,15 @@ correct without any connection-pooling machinery.
 """
 from __future__ import annotations
 
+import socket
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from flask import Blueprint, current_app, jsonify, render_template, request, send_from_directory, url_for
+from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_from_directory, url_for
 
+from backyard_bird.audio.levels import read_mic_status
+from backyard_bird.audio.wav_stream import streaming_wav_header
 from backyard_bird.database.connection import get_connection
 from backyard_bird.database.repositories import (
     DetectionRow,
@@ -211,6 +214,78 @@ def delete_species(scientific_name: str):
         Path(clip_path).unlink(missing_ok=True)
 
     return jsonify({"scientific_name": scientific_name, "detections_deleted": result["detections_deleted"]})
+
+
+@bp.route("/api/mic-status")
+def api_mic_status():
+    """Live mic device/level info for the dashboard's meter (user
+    request, added 2026-09-14) — polled independently from /api/stats
+    at a faster ~1x/second cadence, since it's a much smaller, cheaper
+    payload (a status file read, not a SQLite query) than the full
+    stats/species payload.
+    """
+    payload = read_mic_status(Path(current_app.config["MIC_STATUS_PATH"]))
+    if payload is None:
+        # Missing, malformed, or stale (capture not running / crashed
+        # / never started) all collapse to the same "unknown" shape —
+        # the dashboard shouldn't have to distinguish those to render
+        # "no live data" correctly.
+        return jsonify(
+            {"status": "unknown", "device_name": None, "peak_percent": None, "peak_dbfs": None, "error_message": None}
+        )
+    return jsonify(
+        {
+            "status": payload.get("status"),
+            "device_name": payload.get("device_name"),
+            "peak_percent": payload.get("peak_percent"),
+            "peak_dbfs": payload.get("peak_dbfs"),
+            "error_message": payload.get("error_message"),
+        }
+    )
+
+
+@bp.route("/api/monitor/live")
+def monitor_live():
+    """Real live audio, not a recording — the "listen outside right
+    now" dashboard button (user request, 2026-09-14). Proxies the
+    local-only relay capture_service.py exposes; see
+    audio/live_monitor.py for why a relay is necessary at all (the
+    dashboard can't open the microphone itself — ALSA only allows one
+    process to hold the device, and capture already does).
+    """
+    if not current_app.config["LIVE_MONITOR_ENABLED"]:
+        return jsonify({"error": "Live monitor is disabled (audio.enable_live_monitor: false)."}), 404
+
+    port = current_app.config["LIVE_MONITOR_PORT"]
+    try:
+        sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    except OSError:
+        return jsonify({"error": "Live audio monitor isn't available right now — is capture running?"}), 503
+
+    # Captured before the generator starts, not read from current_app
+    # inside it — the generator runs after this view function returns,
+    # once outside the request context.
+    header = streaming_wav_header(
+        sample_rate=current_app.config["AUDIO_SAMPLE_RATE"],
+        channels=current_app.config["AUDIO_CHANNELS"],
+    )
+
+    def generate():
+        try:
+            yield header
+            while True:
+                data = sock.recv(65536)
+                if not data:
+                    break
+                yield data
+        finally:
+            sock.close()
+
+    return Response(
+        generate(),
+        mimetype="audio/wav",
+        headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"},
+    )
 
 
 @bp.route("/api/stats")

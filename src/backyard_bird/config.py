@@ -54,6 +54,17 @@ class AudioConfig(BaseModel):
     # space day to day, the retention_days values need lowering, not
     # this number raising.
     min_free_disk_gb: float = 10.0
+    # Live "listen outside right now" dashboard button (user request,
+    # 2026-09-14): capture_service.py relays a copy of the audio it's
+    # already capturing over a local-only TCP server on this port, and
+    # the dashboard proxies it to the browser. Off switch exists
+    # because streaming raw outdoor audio is a meaningfully bigger
+    # privacy/security exposure than aggregate detection counts if the
+    # dashboard is ever opened to a LAN with untrusted devices on it
+    # (§23.3 already has no authentication by design/prototype-status
+    # decision — see README's LAN access notes).
+    enable_live_monitor: bool = True
+    live_monitor_port: int = Field(default=8766, ge=1, le=65535)
 
 
 class BirdNETConfig(BaseModel):

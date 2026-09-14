@@ -99,6 +99,76 @@ h2 {
   margin-top: 0.15rem;
 }
 
+.mic-status {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 0.75rem 1rem;
+  box-shadow: var(--shadow);
+  margin-bottom: 1.5rem;
+}
+
+.mic-status-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.9rem;
+  margin-bottom: 0.5rem;
+}
+
+.mic-status-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--text-muted); /* default: unknown, until the first poll lands */
+  flex-shrink: 0;
+}
+
+.mic-status-dot.is-capturing {
+  background: #3fa34d;
+}
+
+.mic-status-dot.is-error {
+  background: #c0392b;
+}
+
+.mic-status-device {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+.mic-status-listen {
+  margin-left: auto; /* pins it to the far right, same trick as .filter-btn-clear */
+}
+
+.level-meter {
+  height: 10px;
+  border-radius: 5px;
+  background: var(--accent-soft);
+  overflow: hidden;
+}
+
+.level-meter-fill {
+  height: 100%;
+  width: 0%;
+  /* Green through most of the range, sliding to amber/red near the
+     top — a standard VU-meter convention so "too hot" reads as a
+     color change, not just a longer bar. Transitioning width (not
+     background) keeps the color swap itself instant, matching how a
+     real meter's LEDs would switch on. */
+  background: #3fa34d;
+  transition: width 0.2s linear;
+}
+
+.level-meter-fill.is-loud {
+  background: #d4a017;
+}
+
+.level-meter-fill.is-clipping {
+  background: #c0392b;
+}
+
 .most-recent {
   margin-bottom: 1.5rem;
 }
