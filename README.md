@@ -26,10 +26,14 @@ detections from real outdoor audio (below), not a §29 phase — added
 2026-09-13/14 as a second host profile alongside the Mac mini.
 **Interactive setup wizard** (`bird-display setup`, below): done —
 geocodes a city/state/ZIP into `location`, lets you pick a detected
-microphone by name, wired into `install.sh`. First piece of the
-"make this easy to install for other users" effort (below the Linux
-notes) — auto-start service integration and public-repo readiness are
-the next two, not started yet.
+microphone by name, wired into `install.sh`.
+**Auto-start on boot** (`bird-display services install`, below): §29
+Phase 8, done — systemd units (Linux) / launchd LaunchAgents (macOS),
+built and tested but not yet switched on for real on either the Mac or
+the Pi (that's a real boot-affecting change on your actual machines,
+left for you to trigger). Public-repo readiness (license, doc polish)
+is the last piece of the "make this easy to install for other users"
+effort, not started yet.
 
 Implemented so far:
 
@@ -665,6 +669,60 @@ zero-devices message and `doctor`'s `audio_devices` Linux hint now say
 so explicitly, rather than just suggesting "check the connection" for
 a cause that wasn't the connection at all.
 
+### Auto-start on boot (2026-09-14)
+
+The second piece of the "make Linux install easy for public GitHub
+users" effort (after the setup wizard, above): `bird-display services
+install` completes requirements §29 Phase 8, which had sat undone
+since Phase 1 — until now, *both* platforms only had the manual
+`scripts/start_all.sh`/`stop_all.sh` launcher, with nothing surviving
+a reboot unless someone ran it by hand.
+
+- **Linux**: one systemd unit per service (`capture`, `analyzer`,
+  `images-watch`, `dashboard`), written to `/etc/systemd/system/`
+  (system-level, needs `sudo`) and enabled with `Restart=on-failure` —
+  each independent, so one crashing repeatedly doesn't take the others
+  down (§20.1). System-level rather than a `--user` unit specifically
+  to avoid needing `loginctl enable-linger` for services to start
+  before any login on a headless boot.
+- **macOS**: one launchd **LaunchAgent** per service, under
+  `~/Library/LaunchAgents/` (no `sudo` — user-writable). A LaunchAgent,
+  never a LaunchDaemon, on purpose: §31.1 already established that
+  macOS blocks microphone capture entirely for any process without an
+  attached GUI/WindowServer session — a LaunchDaemon (system-level, no
+  GUI session) would hit that exact wall permanently, the same one
+  that made this project's own early mic testing have to happen at the
+  physical console rather than over SSH.
+- `bird-display doctor` gained a `service_autostart` check — warns
+  (never fails) if auto-start isn't installed, since the manual
+  launcher remains a fully supported alternative.
+- `bird-display services status` (previously unimplemented, though
+  listed in §25 since the original spec) now does something real:
+  reports each service's installed/running state.
+
+Rendering the unit files/plists (`src/backyard_bird/service_install.py`)
+is pure and fully unit-tested (16 new tests across
+`test_service_install.py`, `test_cli_services.py`, and `doctor.py`'s
+new check) — no root or a real service manager needed to verify the
+generated content is correct. Actually installing them
+(`subprocess`-calling `sudo systemctl`/`launchctl`) is real
+system-changing, boot-affecting behavior, so unlike the setup wizard
+this wasn't switched on unprompted on either the Mac or the Pi — it's
+built and tested, waiting on you to run `bird-display services
+install` on each host when you're ready.
+
+Also fixed along the way: `scripts/start_all.sh`'s summary always
+printed `http://127.0.0.1:8765` for the dashboard regardless of actual
+config — already wrong the moment `dashboard.host` is `0.0.0.0` for
+LAN access (confirmed live: the dashboard's own log line correctly
+showed the Pi's real LAN address while `start_all.sh`'s summary lied
+about it one line below). Fixed by adding `bird-display dashboard url`
+(reusing the same resolution logic `dashboard run` already had,
+instead of a second copy in bash) and having the script call it. Also
+fixed: the "double-click 'Stop Backyard Birds' on the Desktop" line —
+Mac-only framing that made no sense on a headless Ubuntu box with no
+Desktop at all — is now conditional on the actual OS.
+
 ## Setup
 
 Two host profiles are supported (requirements §7.1): a macOS host
@@ -810,7 +868,9 @@ section above for why.
 ## Usage
 
 ```bash
-bird-display setup    # interactive: location + microphone
+bird-display setup             # interactive: location + microphone
+bird-display services install  # auto-start on boot (systemd/launchd)
+bird-display services status
 bird-display doctor
 bird-display config validate
 bird-display audio list-devices

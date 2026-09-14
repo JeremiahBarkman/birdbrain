@@ -7,11 +7,10 @@ scripts). install.sh runs `bird-display doctor` as its final
 prerequisite gate after setting up the venv.
 
 Not every §25 doctor item is implemented yet (network access, frame
-configuration, image-provider configuration, launchd/systemd service
-definitions) — those are Phase 4+/8 concerns tied to features not yet
-built. What's here covers what actually gates a fresh install:
-platform/Python/BirdNET/directories/disk/audio devices/microphone
-permission.
+configuration, image-provider configuration) — those are Phase 4+
+concerns tied to features not yet built. What's here covers what
+actually gates a fresh install: platform/Python/BirdNET/directories/
+disk/audio devices/microphone permission/service auto-start.
 """
 from __future__ import annotations
 
@@ -314,6 +313,47 @@ def check_microphone_permission(configured_device_name: str | None = None) -> Ch
     return CheckResult("microphone_permission", "pass", "Captured real audio from the microphone.")
 
 
+def check_service_autostart() -> CheckResult:
+    """§25: "launchd service definitions" (extended to systemd on
+    Linux — see requirements §5.1/§30 rule 27). Warns, never fails:
+    auto-start is a convenience on top of a fully supported manual
+    alternative (scripts/start_all.sh/stop_all.sh), not a hard
+    requirement for the system to function (§29 Phase 8 was the only
+    thing gating this until `bird-display services install` existed).
+    """
+    import platform
+
+    from backyard_bird.service_install import SERVICE_DEFINITIONS, launchd_plist_filename, systemd_unit_filename
+
+    system = platform.system()
+    if system == "Linux":
+        installed = [s for s in SERVICE_DEFINITIONS if Path("/etc/systemd/system", systemd_unit_filename(s)).exists()]
+    elif system == "Darwin":
+        agents_dir = Path.home() / "Library" / "LaunchAgents"
+        installed = [s for s in SERVICE_DEFINITIONS if (agents_dir / launchd_plist_filename(s)).exists()]
+    else:
+        return CheckResult("service_autostart", "warn", f"Auto-start isn't supported on {system}.")
+
+    if not installed:
+        return CheckResult(
+            "service_autostart",
+            "warn",
+            "No auto-start services installed — after a reboot, services must be started "
+            "manually (scripts/start_all.sh). Run `bird-display services install` to fix this.",
+        )
+    if len(installed) < len(SERVICE_DEFINITIONS):
+        missing = ", ".join(s.name for s in SERVICE_DEFINITIONS if s not in installed)
+        return CheckResult(
+            "service_autostart",
+            "warn",
+            f"Only {len(installed)}/{len(SERVICE_DEFINITIONS)} services have auto-start "
+            f"installed (missing: {missing}). Run `bird-display services install`.",
+        )
+    return CheckResult(
+        "service_autostart", "pass", f"All {len(SERVICE_DEFINITIONS)} services installed for auto-start."
+    )
+
+
 def run_all_checks(
     data_directory: Path | None = None,
     configured_device_name: str | None = None,
@@ -325,4 +365,5 @@ def run_all_checks(
         results.append(check_disk_space(data_directory))
     results.append(check_audio_devices(configured_device_name))
     results.append(check_microphone_permission(configured_device_name))
+    results.append(check_service_autostart())
     return results

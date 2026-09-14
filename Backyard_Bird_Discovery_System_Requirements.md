@@ -1834,7 +1834,7 @@ Exit condition:
 
 Deliverables:
 
-- `launchd` definitions (macOS) / `systemd` unit definitions (Linux)
+- `launchd` definitions (macOS) / `systemd` unit definitions (Linux) — **done, 2026-09-14** (`bird-display services install`/`uninstall`/`status`; see `src/backyard_bird/service_install.py` and README's dated implementation note)
 - Installation script
 - Heartbeats
 - `doctor` command
@@ -1846,6 +1846,20 @@ Deliverables:
 Exit condition:
 
 > The system starts after reboot and operates unattended.
+
+**Implementation note (2026-09-14):** `bird-display services install`
+renders and installs one systemd unit (Linux, system-level, under
+`/etc/systemd/system/`, needs sudo) or launchd LaunchAgent plist
+(macOS, user-level, under `~/Library/LaunchAgents/`, no sudo) per
+service, each independently restart-on-failure — one crashing service
+does not affect the others (§20.1). The macOS choice is a LaunchAgent,
+never a LaunchDaemon, specifically because §31.1 already established
+that macOS blocks microphone capture for any process without an
+attached GUI session; a LaunchDaemon would hit that wall permanently.
+`bird-display doctor` gained a `service_autostart` check (warns, never
+fails — the manual `scripts/start_all.sh`/`stop_all.sh` launcher
+remains a fully supported alternative, so auto-start is a convenience,
+not a hard requirement).
 
 ---
 

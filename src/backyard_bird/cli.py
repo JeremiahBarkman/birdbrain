@@ -4,10 +4,11 @@ See requirements §25 for the full planned subcommand list. Implemented
 so far: config, audio device discovery/test, continuous capture,
 one-shot and queue-driven BirdNET analysis, database migrate/
 integrity-check, queue status, detection/species timeline queries,
-image acquisition, the live status dashboard, `doctor` (checks
-only — network access, frame configuration, image-provider
-configuration, and launchd/systemd service definitions aren't covered
-yet), and `setup` (an interactive first-run wizard for location and
+image acquisition, the live status dashboard, `services` (install/
+uninstall/status — systemd on Linux, launchd on macOS, §29 Phase 8,
+added 2026-09-14), `doctor` (checks only — network access, frame
+configuration, and image-provider configuration aren't covered yet),
+and `setup` (an interactive first-run wizard for location and
 microphone selection — not in the original §25 list, added 2026-09-14
 once a public/friendlier install became a real goal; see README).
 Not yet built: slideshow/frame commands (Phase 6+).
@@ -29,6 +30,7 @@ DEFAULT_CONFIG_PATH = Path("config/config.yaml")
 # fine for this project (run from source on one machine, never packaged
 # for distribution), but worth knowing if that assumption ever changes.
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
+REPO_DIR = Path(__file__).resolve().parents[2]
 
 
 def _load_config_or_exit(config_path: Path) -> AppConfig:
@@ -456,6 +458,31 @@ def dashboard() -> None:
     """Local status dashboard (§22)."""
 
 
+@dashboard.command("url")
+@click.pass_context
+def dashboard_url(ctx: click.Context) -> None:
+    """Print the dashboard's actual configured URL.
+
+    Exists so scripts/start_all.sh can show the real address instead
+    of a hardcoded guess — it used to always print
+    http://127.0.0.1:8765 regardless of dashboard.host, which was
+    simply wrong the moment host was set to 0.0.0.0 for LAN access
+    (confirmed live on the Raspberry Pi: the dashboard itself logged
+    the correct LAN URL while start_all.sh's own summary line lied
+    about it). Reuses the same resolution logic `dashboard run` uses,
+    rather than a second copy in bash (CLAUDE.md: no business logic in
+    shell scripts).
+    """
+    config_path: Path = ctx.obj["config_path"]
+    app_config = _load_config_or_exit(config_path)
+    host, port = _resolve_dashboard_host_port(None, None, app_config.dashboard)
+    if host in ("127.0.0.1", "localhost"):
+        click.echo(f"http://{host}:{port}")
+        return
+    lan_ip = _lan_ip() if host == "0.0.0.0" else host
+    click.echo(f"http://{lan_ip or host}:{port}")
+
+
 @dashboard.command("run")
 @click.option(
     "--host",
@@ -774,6 +801,173 @@ def setup_cmd(ctx: click.Context) -> None:
     click.echo()
     click.echo("Setup complete. Run `bird-display doctor` to verify, or")
     click.echo("`bird-display config validate` to see what's now configured.")
+
+
+def _venv_bin() -> Path:
+    """The bin/ directory of whatever Python is actually running this
+    command — works whether that's .venv/bin or something else,
+    without assuming a fixed venv location.
+    """
+    return Path(sys.executable).resolve().parent
+
+
+@cli.group()
+def services() -> None:
+    """Boot-time auto-start (systemd on Linux, launchd on macOS; §29 Phase 8).
+
+    Installs the four long-running services (capture, analyzer,
+    images-watch, dashboard) as native OS services so they survive a
+    reboot without scripts/start_all.sh being run by hand. Each is its
+    own independent unit/agent with its own restart policy — one
+    crashing repeatedly does not stop the others (§20.1).
+    """
+
+
+@services.command("install")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt (for scripted/non-interactive use).")
+def services_install(yes: bool) -> None:
+    """Install and enable auto-start for this OS.
+
+    Requires sudo on Linux (writes /etc/systemd/system/ unit files —
+    a system-level choice specifically to avoid needing `loginctl
+    enable-linger` for services to start before any login on a
+    headless boot). No sudo on macOS (LaunchAgents live under the
+    user's own ~/Library/LaunchAgents/) — but per §31.1, a LaunchAgent
+    is required there specifically, not a LaunchDaemon, or microphone
+    capture would silently fail with no GUI session attached.
+    """
+    import platform
+    import subprocess
+
+    from backyard_bird.service_install import (
+        SERVICE_DEFINITIONS,
+        launchd_plist_filename,
+        render_launchd_plist,
+        render_systemd_unit,
+        systemd_unit_filename,
+    )
+
+    system = platform.system()
+    venv_bin = _venv_bin()
+
+    if system == "Darwin":
+        agents_dir = Path.home() / "Library" / "LaunchAgents"
+        click.echo(f"Will install {len(SERVICE_DEFINITIONS)} LaunchAgents to {agents_dir}:")
+        for service in SERVICE_DEFINITIONS:
+            click.echo(f"  {service.name}")
+        if not yes and not click.confirm("Install and start these now?", default=True):
+            click.echo("Aborted — nothing changed.")
+            return
+        agents_dir.mkdir(parents=True, exist_ok=True)
+        (REPO_DIR / "data" / "logs").mkdir(parents=True, exist_ok=True)
+        for service in SERVICE_DEFINITIONS:
+            plist_path = agents_dir / launchd_plist_filename(service)
+            plist_path.write_bytes(render_launchd_plist(service, repo_dir=REPO_DIR, venv_bin=venv_bin))
+            import os
+
+            subprocess.run(
+                ["launchctl", "bootstrap", f"gui/{os.getuid()}", str(plist_path)],
+                check=False,
+            )
+            click.echo(f"  {service.name}: installed and started")
+        click.echo("Done. `bird-display services status` to check.")
+    elif system == "Linux":
+        import getpass
+
+        units_dir = Path("/etc/systemd/system")
+        user = getpass.getuser()
+        click.echo(f"Will install {len(SERVICE_DEFINITIONS)} systemd services to {units_dir} (needs sudo):")
+        for service in SERVICE_DEFINITIONS:
+            click.echo(f"  {systemd_unit_filename(service)}")
+        if not yes and not click.confirm("Install and enable these now?", default=True):
+            click.echo("Aborted — nothing changed.")
+            return
+        (REPO_DIR / "data" / "logs").mkdir(parents=True, exist_ok=True)
+        unit_names = []
+        for service in SERVICE_DEFINITIONS:
+            content = render_systemd_unit(service, repo_dir=REPO_DIR, venv_bin=venv_bin, user=user)
+            unit_name = systemd_unit_filename(service)
+            unit_names.append(unit_name)
+            subprocess.run(
+                ["sudo", "tee", str(units_dir / unit_name)],
+                input=content,
+                text=True,
+                check=True,
+                stdout=subprocess.DEVNULL,
+            )
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=True)
+        subprocess.run(["sudo", "systemctl", "enable", "--now", *unit_names], check=True)
+        click.echo("Done. `bird-display services status` to check.")
+    else:
+        click.echo(f"Auto-start isn't supported on {system}.", err=True)
+        sys.exit(1)
+
+
+@services.command("uninstall")
+@click.option("--yes", is_flag=True, help="Skip the confirmation prompt.")
+def services_uninstall(yes: bool) -> None:
+    """Stop, disable, and remove the auto-start services."""
+    import platform
+    import subprocess
+
+    from backyard_bird.service_install import SERVICE_DEFINITIONS, launchd_plist_filename, systemd_unit_filename
+
+    if not yes and not click.confirm("Stop and remove all auto-start services?", default=False):
+        click.echo("Aborted — nothing changed.")
+        return
+
+    system = platform.system()
+    if system == "Linux":
+        unit_names = [systemd_unit_filename(s) for s in SERVICE_DEFINITIONS]
+        subprocess.run(["sudo", "systemctl", "disable", "--now", *unit_names], check=False)
+        for unit_name in unit_names:
+            subprocess.run(["sudo", "rm", "-f", f"/etc/systemd/system/{unit_name}"], check=False)
+        subprocess.run(["sudo", "systemctl", "daemon-reload"], check=False)
+    elif system == "Darwin":
+        import os
+
+        agents_dir = Path.home() / "Library" / "LaunchAgents"
+        for service in SERVICE_DEFINITIONS:
+            plist_path = agents_dir / launchd_plist_filename(service)
+            subprocess.run(["launchctl", "bootout", f"gui/{os.getuid()}", str(plist_path)], check=False)
+            plist_path.unlink(missing_ok=True)
+    else:
+        click.echo(f"Auto-start isn't supported on {system}.", err=True)
+        sys.exit(1)
+    click.echo("Done.")
+
+
+@services.command("status")
+def services_status() -> None:
+    """Show whether each service is installed as an OS auto-start service, and its current state."""
+    import platform
+    import subprocess
+
+    from backyard_bird.service_install import SERVICE_DEFINITIONS, launchd_plist_filename, systemd_unit_filename
+
+    system = platform.system()
+    for service in SERVICE_DEFINITIONS:
+        if system == "Linux":
+            unit_name = systemd_unit_filename(service)
+            if not Path("/etc/systemd/system", unit_name).exists():
+                state = "not installed"
+            else:
+                result = subprocess.run(["systemctl", "is-active", unit_name], capture_output=True, text=True)
+                state = result.stdout.strip() or "unknown"
+        elif system == "Darwin":
+            plist_path = Path.home() / "Library" / "LaunchAgents" / launchd_plist_filename(service)
+            if not plist_path.exists():
+                state = "not installed"
+            else:
+                result = subprocess.run(
+                    ["launchctl", "list", launchd_plist_filename(service).removesuffix(".plist")],
+                    capture_output=True,
+                    text=True,
+                )
+                state = "running" if result.returncode == 0 else "not running"
+        else:
+            state = "unsupported OS"
+        click.echo(f"  {service.name:15s} {state}")
 
 
 if __name__ == "__main__":

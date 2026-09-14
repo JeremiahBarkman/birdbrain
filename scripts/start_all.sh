@@ -79,11 +79,17 @@ start_service analyzer bird-display analyze run
 start_service images_watch bird-display images watch
 start_service dashboard bird-display dashboard run
 
+DASHBOARD_URL="$(bird-display dashboard url 2>/dev/null || echo "http://127.0.0.1:8765")"
+
 echo
-echo "Dashboard:  http://127.0.0.1:8765"
+echo "Dashboard:  $DASHBOARD_URL"
 echo "Logs:       $LOG_DIR/"
-echo "To stop:    double-click 'Stop Backyard Birds' on the Desktop"
-echo "            (or run scripts/stop_all.sh)"
+if [ "$(uname -s)" = "Darwin" ]; then
+    echo "To stop:    double-click 'Stop Backyard Birds' on the Desktop"
+    echo "            (or run scripts/stop_all.sh)"
+else
+    echo "To stop:    run scripts/stop_all.sh"
+fi
 echo
 echo "Services keep running after you close this window."
 read -n 1 -s -r -p "Press any key to close this window now..."

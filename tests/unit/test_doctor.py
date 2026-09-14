@@ -21,6 +21,7 @@ from backyard_bird.doctor import (
     check_platform,
     check_python_version,
     check_required_directories,
+    check_service_autostart,
     run_all_checks,
 )
 
@@ -205,3 +206,61 @@ def test_run_all_checks_skips_directory_and_disk_checks_without_data_directory()
     assert "python_version" in names
     assert "birdnet" in names
     assert "audio_devices" in names
+    assert "service_autostart" in names
+
+
+def test_service_autostart_warns_when_nothing_installed(tmp_path: Path) -> None:
+    with patch("platform.system", return_value="Darwin"), patch("pathlib.Path.home", return_value=tmp_path):
+        result = check_service_autostart()
+    assert result.status == "warn"
+    assert "services install" in result.message
+
+
+def test_service_autostart_passes_when_all_installed_linux(tmp_path: Path) -> None:
+    from backyard_bird.service_install import SERVICE_DEFINITIONS, systemd_unit_filename
+
+    systemd_dir = tmp_path / "etc" / "systemd" / "system"
+    systemd_dir.mkdir(parents=True)
+    for service in SERVICE_DEFINITIONS:
+        (systemd_dir / systemd_unit_filename(service)).touch()
+
+    with patch("platform.system", return_value="Linux"):
+        # Patch the exact call site (Path("/etc/systemd/system", ...)) by
+        # redirecting Path.exists to check under tmp_path instead of the
+        # real filesystem root - avoids needing real root-owned files.
+        real_exists = Path.exists
+
+        def fake_exists(self: Path) -> bool:
+            if str(self).startswith("/etc/systemd/system"):
+                return (systemd_dir / self.name).exists()
+            return real_exists(self)
+
+        with patch.object(Path, "exists", fake_exists):
+            result = check_service_autostart()
+
+    assert result.status == "pass"
+    assert f"All {len(SERVICE_DEFINITIONS)}" in result.message
+
+
+def test_service_autostart_warns_when_partially_installed_linux() -> None:
+    from backyard_bird.service_install import SERVICE_DEFINITIONS, systemd_unit_filename
+
+    only_first = systemd_unit_filename(SERVICE_DEFINITIONS[0])
+    real_exists = Path.exists
+
+    def fake_exists(self: Path) -> bool:
+        if str(self).startswith("/etc/systemd/system"):
+            return self.name == only_first
+        return real_exists(self)
+
+    with patch("platform.system", return_value="Linux"), patch.object(Path, "exists", fake_exists):
+        result = check_service_autostart()
+
+    assert result.status == "warn"
+    assert "1/" in result.message
+
+
+def test_service_autostart_unsupported_os_warns() -> None:
+    with patch("platform.system", return_value="Windows"):
+        result = check_service_autostart()
+    assert result.status == "warn"
