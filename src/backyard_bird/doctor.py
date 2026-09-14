@@ -214,7 +214,11 @@ def check_audio_devices(configured_device_name: str | None = None) -> CheckResul
         if platform.system() == "Linux":
             hint = (
                 "Check that a microphone is connected, that ALSA/PulseAudio can see it "
-                "(`arecord -l`), and that this user is in the `audio` group."
+                "(`arecord -l`), and that this user is in the `audio` group. Also confirm "
+                "`bird-display capture run` isn't already running: ALSA's raw `hw:N,M` "
+                "device nodes only allow one process at a time, even just to query them "
+                "(confirmed live: a running `capture run` alone makes this exact check "
+                "report zero devices) — stop it first (`./scripts/stop_all.sh`) if so."
             )
         else:
             hint = "Check macOS microphone permissions for your terminal/Python and that a microphone is connected."

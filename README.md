@@ -646,6 +646,25 @@ explicitly up front — "'City, State' is least ambiguous... a bare
 ZIP/postal code can match a different country" — so a new user sees
 the warning before typing, not just the confirmation after.
 
+**Second real gotcha, found immediately after fixing the first one:**
+the wizard's own microphone picker reported "No input devices found"
+on the Pi — with the actual TONOR mic verifiably connected (`lsusb`
+showed it, `/proc/asound/cards` showed it registered as ALSA card 3).
+Root cause, confirmed by directly testing the hypothesis: `capture run`
+was already running as a background service and had the device open.
+ALSA's raw `hw:N,M` device nodes (unlike `plughw:`/`default`) don't
+support concurrent access — not even a second process just *querying*
+capabilities, let alone recording — so an already-running capture
+service alone is enough to make `list_input_devices()` return empty
+for that device to any other process, including `bird-display setup`,
+`audio list-devices`, and `doctor`. Confirmed directly: stopping
+services (`./scripts/stop_all.sh`) made the device reappear
+immediately, with no other change. This is Linux/ALSA-specific — it
+has no equivalent on the macOS/CoreAudio profile. Both `setup`'s
+zero-devices message and `doctor`'s `audio_devices` Linux hint now say
+so explicitly, rather than just suggesting "check the connection" for
+a cause that wasn't the connection at all.
+
 ## Setup
 
 Two host profiles are supported (requirements §7.1): a macOS host

@@ -743,8 +743,12 @@ def setup_cmd(ctx: click.Context) -> None:
     devices = list_input_devices()
     if not devices:
         click.echo(
-            "No input devices found. Plug in a microphone and re-run `bird-display setup`, "
-            "or edit audio.device_name in config.yaml by hand once one is connected."
+            "No input devices found. Plug in a microphone and re-run `bird-display setup`. "
+            "On Linux, also check that `bird-display capture run` isn't already running — "
+            "ALSA's raw device nodes only allow one process at a time to even query them, "
+            "so an active capture service alone can make this look like no mic is connected "
+            "(stop it first with ./scripts/stop_all.sh, then re-run setup). Or edit "
+            "audio.device_name in config.yaml by hand once a device is available."
         )
     else:
         if len(devices) == 1:
