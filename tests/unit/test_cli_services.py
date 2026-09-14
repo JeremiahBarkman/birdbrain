@@ -126,6 +126,13 @@ def test_services_status_reports_not_installed_when_absent(
     fake_run: _RecordingRun, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(platform, "system", lambda: "Linux")
+    # Path.exists is pinned False rather than left to hit the real
+    # filesystem: on a host where the feature has actually been
+    # installed for real (confirmed live on the Pi, deliberately, in
+    # an earlier session), /etc/systemd/system/birdbrain-*.service
+    # genuinely exist, which silently broke this "nothing installed"
+    # scenario's assumption.
+    monkeypatch.setattr(Path, "exists", lambda self: False)
 
     result = CliRunner().invoke(cli, ["services", "status"])
 

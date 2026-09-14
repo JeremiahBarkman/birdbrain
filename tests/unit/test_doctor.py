@@ -115,7 +115,13 @@ def test_disk_space_passes_with_plenty_free(tmp_path: Path) -> None:
 
 
 def test_audio_devices_fails_when_none_found() -> None:
-    with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]):
+    # Explicitly pinned to Darwin: on real Linux hardware with capture
+    # actually running (confirmed live on the Pi - this exact test
+    # failed there once auto-start was genuinely installed), the
+    # unpinned version of this test silently depended on the real host
+    # OS/process state rather than testing a deterministic scenario.
+    with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]), \
+         patch("platform.system", return_value="Darwin"):
         result = check_audio_devices()
     assert result.status == "fail"
 
@@ -185,8 +191,14 @@ def test_audio_devices_passes_when_configured_device_found() -> None:
 
 
 def test_audio_devices_fail_message_is_linux_specific_on_linux() -> None:
+    # _capture_process_is_running is explicitly pinned False - without
+    # it, this test's result silently depends on whether a real
+    # `bird-display capture run` process happens to be running on
+    # whatever machine runs the suite (confirmed live: this failed on
+    # the Pi once auto-start made that genuinely, correctly true).
     with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]), \
-         patch("platform.system", return_value="Linux"):
+         patch("platform.system", return_value="Linux"), \
+         patch("backyard_bird.doctor._capture_process_is_running", return_value=False):
         result = check_audio_devices()
     assert result.status == "fail"
     assert "audio" in result.message and "macOS" not in result.message
