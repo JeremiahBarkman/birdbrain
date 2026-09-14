@@ -120,6 +120,46 @@ def test_audio_devices_fails_when_none_found() -> None:
     assert result.status == "fail"
 
 
+def test_audio_devices_warns_not_fails_when_capture_already_running_on_linux() -> None:
+    # Real scenario found live: once auto-start is enabled (§29 Phase
+    # 8), capture_run holds the mic open permanently, and ALSA's raw
+    # hw:N,M nodes make that look identical to "no mic" to any other
+    # process. This must never be a FAIL - doctor would then always
+    # fail in the normal, healthy, auto-start-enabled state.
+    with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]), \
+         patch("platform.system", return_value="Linux"), \
+         patch("backyard_bird.doctor._capture_process_is_running", return_value=True):
+        result = check_audio_devices()
+    assert result.status == "warn"
+    assert "capture run" in result.message
+
+
+def test_audio_devices_still_fails_on_linux_when_capture_not_running() -> None:
+    with patch("backyard_bird.audio.devices.list_input_devices", return_value=[]), \
+         patch("platform.system", return_value="Linux"), \
+         patch("backyard_bird.doctor._capture_process_is_running", return_value=False):
+        result = check_audio_devices()
+    assert result.status == "fail"
+
+
+def test_capture_process_is_running_reflects_pgrep_exit_code() -> None:
+    from backyard_bird.doctor import _capture_process_is_running
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        assert _capture_process_is_running() is True
+
+        mock_run.return_value.returncode = 1
+        assert _capture_process_is_running() is False
+
+
+def test_capture_process_is_running_defaults_false_if_pgrep_missing() -> None:
+    from backyard_bird.doctor import _capture_process_is_running
+
+    with patch("subprocess.run", side_effect=FileNotFoundError("pgrep not found")):
+        assert _capture_process_is_running() is False
+
+
 def test_audio_devices_warns_when_configured_device_not_found() -> None:
     devices = [AudioDevice(index=0, name="Built-in Microphone", max_input_channels=1, default_samplerate=48000.0, host_api="Core Audio")]
     with patch("backyard_bird.audio.devices.list_input_devices", return_value=devices):

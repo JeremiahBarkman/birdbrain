@@ -37,6 +37,25 @@ class CheckResult:
     message: str
 
 
+def _capture_process_is_running() -> bool:
+    """Best-effort check via `pgrep` (bundled on both target OSes, no
+    new dependency). Used only to improve the accuracy of
+    check_audio_devices/check_microphone_permission's messages when
+    devices come back empty - never trusted as a sole signal of
+    anything else. If pgrep itself is missing or errors, this
+    conservatively reports False (not running), which just falls back
+    to this project's original, stricter FAIL behavior rather than
+    silently hiding a real problem.
+    """
+    import subprocess
+
+    try:
+        result = subprocess.run(["pgrep", "-f", "bird-display capture run"], capture_output=True, text=True)
+        return result.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def check_platform() -> CheckResult:
     """This project targets two host profiles (requirements §7.1): a
     macOS Mac mini and a Linux (Ubuntu) host such as a Raspberry Pi —
@@ -209,6 +228,26 @@ def check_audio_devices(configured_device_name: str | None = None) -> CheckResul
 
     if not devices:
         import platform
+
+        if platform.system() == "Linux" and _capture_process_is_running():
+            # Not a failure - the expected, permanent steady state once
+            # auto-start is enabled (§29 Phase 8): capture_run holds the
+            # device open continuously, and ALSA's raw hw:N,M nodes only
+            # allow one process at a time to even query them (confirmed
+            # live on the Pi). Without this branch, `doctor` would FAIL
+            # this check forever in the normal healthy case - a real
+            # trust problem for anyone checking its exit code after a
+            # reboot, found by actually enabling auto-start and running
+            # doctor right after (2026-09-14).
+            return CheckResult(
+                "audio_devices",
+                "warn",
+                "No input devices visible, but `bird-display capture run` is already active — "
+                "expected: ALSA's raw hw:N,M device nodes only allow one process at a time to "
+                "even query them, so this check can't see a device the running capture service "
+                "already holds. Not necessarily a problem — check `bird-display queue status` "
+                "or the dashboard for real segments/detections instead.",
+            )
 
         if platform.system() == "Linux":
             hint = (

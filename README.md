@@ -723,6 +723,24 @@ fixed: the "double-click 'Stop Backyard Birds' on the Desktop" line —
 Mac-only framing that made no sense on a headless Ubuntu box with no
 Desktop at all — is now conditional on the actual OS.
 
+**Real bug found on the very first live `services install` run, on the
+Pi:** once `capture` auto-starts and holds the mic open permanently —
+the whole point of this feature — `bird-display doctor`'s
+`audio_devices` check would `FAIL` **forever after**, in the normal,
+healthy, steady state, because ALSA's raw `hw:N,M` exclusivity
+(documented above) makes a device already held by `capture run` look
+identical to "no mic connected" to any other process, including
+`doctor` itself. `doctor` exits nonzero on any `FAIL`, so this would
+make `doctor` permanently report failure after every successful,
+correct install — a real trust problem for exactly the audience this
+whole effort is for. Fixed: `check_audio_devices` now checks whether
+`capture run` is already active (via `pgrep`, bundled on both target
+OSes — no new dependency) before concluding "no devices" is a real
+problem, and reports `WARN` with an accurate explanation instead of
+`FAIL` when that's the cause. 4 new unit tests; not yet re-verified
+live on the Pi against the actual running auto-start service — that's
+the next step before merging this branch.
+
 ## Setup
 
 Two host profiles are supported (requirements §7.1): a macOS host
