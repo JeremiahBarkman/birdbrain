@@ -807,8 +807,18 @@ def _venv_bin() -> Path:
     """The bin/ directory of whatever Python is actually running this
     command — works whether that's .venv/bin or something else,
     without assuming a fixed venv location.
+
+    Deliberately NOT .resolve()'d: a venv's python binary is typically
+    a symlink to the base interpreter that created it (e.g.
+    .venv/bin/python3.11 -> /usr/bin/python3.11) — resolving it
+    follows that symlink to its real target, which is outside the venv
+    entirely. Confirmed live on the Pi: this exact mistake wrote
+    ExecStart=/usr/bin/bird-display into a systemd unit instead of the
+    venv's own bird-display script — systemd could never execute it
+    (203/EXEC), so capture crash-looped on every restart attempt and
+    never actually ran (see README's auto-start notes).
     """
-    return Path(sys.executable).resolve().parent
+    return Path(sys.executable).parent
 
 
 @cli.group()

@@ -737,9 +737,38 @@ whole effort is for. Fixed: `check_audio_devices` now checks whether
 `capture run` is already active (via `pgrep`, bundled on both target
 OSes — no new dependency) before concluding "no devices" is a real
 problem, and reports `WARN` with an accurate explanation instead of
-`FAIL` when that's the cause. 4 new unit tests; not yet re-verified
-live on the Pi against the actual running auto-start service — that's
-the next step before merging this branch.
+`FAIL` when that's the cause. 4 new unit tests. Re-verified live on the
+Pi — confirmed correct (`audio_devices: WARN` with the expected
+message) — but that same live check also surfaced a second, much more
+serious bug, below.
+
+**Second, more serious real bug — the systemd units never actually
+worked, for a completely unrelated reason:** `systemctl status` showed
+every service stuck in `activating (auto-restart)` with `status=203/
+EXEC` — systemd's own code for "could not execute the specified
+command" — and `journalctl` showed 55+ failed restart attempts, one
+every `RestartSec=10`, since the moment `services install` ran.
+Root cause: `_venv_bin()` computed the venv's `bin/` directory as
+`Path(sys.executable).resolve().parent` — but a venv's `python`
+binary is typically a *symlink* to the base interpreter that created
+it (`.venv/bin/python3.11 -> /usr/bin/python3.11`), and `.resolve()`
+follows symlinks to their real target. The rendered unit ended up with
+`ExecStart=/usr/bin/bird-display` — a path that doesn't exist —
+instead of the venv's own `bird-display` script. Fixed by dropping
+`.resolve()`: `sys.executable`'s reported path already lives inside
+the venv's `bin/`, resolving it was never necessary and actively wrong
+here. 1 new regression test (`test_venv_bin_does_not_resolve_symlinks`,
+simulating exactly this symlink shape without needing a real venv).
+
+Worth being honest about the process failure here, not just the code
+fix: this bug shipped in the same commit as the feature, wasn't caught
+by 16 passing unit tests (none of which exercised the actual path
+computation against a realistic symlink), and was only found because
+`systemctl status`/`journalctl` were checked directly after
+`bird-display services status` alone kept reporting `activating` —
+a state whose ambiguity (mid-restart? genuinely stuck?) should have
+been chased immediately with real systemd diagnostics rather than
+assumed transient on the first look.
 
 ## Setup
 

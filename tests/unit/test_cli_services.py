@@ -7,12 +7,13 @@ from __future__ import annotations
 
 import platform
 import subprocess
+import sys
 from pathlib import Path
 
 import pytest
 from click.testing import CliRunner
 
-from backyard_bird.cli import cli
+from backyard_bird.cli import _venv_bin, cli
 from backyard_bird.service_install import SERVICE_DEFINITIONS
 
 
@@ -35,6 +36,27 @@ def fake_run(monkeypatch: pytest.MonkeyPatch) -> _RecordingRun:
     recorder = _RecordingRun()
     monkeypatch.setattr(subprocess, "run", recorder)
     return recorder
+
+
+def test_venv_bin_does_not_resolve_symlinks(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    # Real bug found live on the Pi: a venv's python binary is typically
+    # a symlink to the base interpreter that created it (e.g.
+    # .venv/bin/python3.11 -> /usr/bin/python3.11). _venv_bin() must NOT
+    # follow that symlink, or ExecStart ends up pointing outside the
+    # venv entirely - this exact mistake wrote
+    # ExecStart=/usr/bin/bird-display into a systemd unit, which
+    # systemd could never execute (203/EXEC), and capture crash-looped
+    # forever without ever actually running.
+    venv_bin = tmp_path / "birdbrain" / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    real_python = tmp_path / "usr-bin-python3.11"
+    real_python.write_text("")
+    symlinked_python = venv_bin / "python3.11"
+    symlinked_python.symlink_to(real_python)
+
+    monkeypatch.setattr(sys, "executable", str(symlinked_python))
+
+    assert _venv_bin() == venv_bin
 
 
 def test_services_install_linux_writes_units_and_enables(
