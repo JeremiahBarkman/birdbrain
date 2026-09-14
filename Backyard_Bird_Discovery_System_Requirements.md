@@ -4,9 +4,17 @@
 
 **Document status:** Initial implementation requirements  
 **Target development environment:** Claude Code  
-**Target host:** Apple Mac mini with Apple M1 and 16 GB unified memory  
-**Primary operating system:** macOS  
+**Target hosts:** Apple Mac mini with Apple M1 and 16 GB unified memory (primary development host); Raspberry Pi 4B with 4 GB RAM (added host, resource-constrained profile)  
+**Primary operating systems:** macOS; Ubuntu 24.04 LTS (aarch64) on Linux hosts  
 **Primary language:** Python 3  
+
+> **Platform addition (2026-09-13):** This document originally named the
+> Mac mini/macOS as the sole target (singular "Target host"/"Primary
+> operating system"). Per the user's request to move the deployment to a
+> Raspberry Pi, this is revised to name two supported hosts rather than
+> silently reinterpreting the original singular language. Both hosts are
+> supported going forward; nothing here retires the Mac mini path. See
+> §7.1, §5.1, §29 Phase 8, and §31.1 for the specifics this affects.
 **Bird identification engine:** BirdNET-Analyzer  
 **Primary database:** SQLite  
 **Photo frame:** Euphro WF1561 family  
@@ -131,7 +139,7 @@ The following are outside the initial scope:
 
 ### 5.1 Automation Platform
 
-The project shall use **custom Python services managed by macOS `launchd`**.
+The project shall use **custom Python services managed by the host OS's native service manager**: macOS `launchd` on the Mac mini, Linux `systemd` on Ubuntu hosts (Raspberry Pi included). Neither has been implemented yet (§29 Phase 8) — until then, both platforms use the manual `scripts/start_all.sh`/`stop_all.sh` launcher.
 
 A workflow platform such as n8n is not recommended as the core runtime because it would add operational overhead without improving the principal audio-analysis workflow.
 
@@ -139,10 +147,10 @@ Python is recommended because:
 
 - BirdNET-Analyzer is Python-oriented.
 - Python has mature audio, SQLite, HTTP, scheduling, and image-processing libraries.
-- Python services are lightweight enough for the M1 Mac mini.
+- Python services are lightweight enough for the M1 Mac mini and, using the lighter `tflite-runtime` BirdNET backend, for a 4 GB Raspberry Pi.
 - The services can invoke BirdNET directly or through a dedicated adapter.
 - Claude Code can modify and test the components independently.
-- `launchd` provides native startup and restart behavior on macOS.
+- `launchd` (macOS) and `systemd` (Linux) each provide native startup and restart behavior on their respective OS.
 
 ### 5.2 Service Model
 
@@ -209,6 +217,10 @@ Euphro WF1561
 
 ### 7.1 Host Computer
 
+Two host profiles are supported:
+
+**Profile A — Mac mini (primary development host)**
+
 - Apple Mac mini
 - Apple M1 processor
 - 16 GB unified memory
@@ -217,6 +229,25 @@ Euphro WF1561
 - Persistent local storage
 - Wired Ethernet preferred
 - Wi-Fi acceptable where necessary
+
+**Profile B — Raspberry Pi (added 2026-09-13)**
+
+- Raspberry Pi 4 Model B
+- 4 GB RAM
+- Ubuntu 24.04 LTS (aarch64)
+- Continuous power
+- microSD or USB-attached persistent storage
+- Wired Ethernet preferred; Wi-Fi acceptable
+
+The Pi's far smaller memory budget (4 GB vs. 16 GB unified) means §19's
+concurrency defaults, already conservative, must not be raised on this
+profile without measuring headroom first (§30 rule 30). It also changes
+the BirdNET runtime choice: `birdnetlib` prefers `tflite_runtime` over
+`tensorflow` when both are importable, so the Pi installs
+`tflite-runtime` instead of the full `tensorflow` package the Mac mini
+uses — lighter, and Linux aarch64 has official wheels for it (macOS
+arm64 does not, which is why the Mac mini profile uses `tensorflow`;
+see §29 Phase 1 validation notes in `README.md`).
 
 ### 7.2 Outdoor Microphone
 
@@ -1788,7 +1819,7 @@ Exit condition:
 
 Deliverables:
 
-- `launchd` definitions
+- `launchd` definitions (macOS) / `systemd` unit definitions (Linux)
 - Installation script
 - Heartbeats
 - `doctor` command
@@ -1833,7 +1864,7 @@ Claude Code shall follow these rules:
 24. Do not assume Uhale offers a public API.
 25. Isolate browser automation, if used, behind the frame adapter.
 26. Do not root or modify the frame firmware.
-27. Keep macOS-specific service code separate from core logic.
+27. Keep OS-specific service code (macOS `launchd` vs. Linux `systemd`) separate from core logic.
 28. Never commit the frame serial number, pairing code, MAC address, IP address, or credentials.
 29. Preserve a manual export path even after automated delivery is implemented.
 30. Measure CPU, memory, queue delay, and analysis throughput before increasing concurrency.
@@ -1853,7 +1884,18 @@ Determine:
 - Gain
 - Wind protection
 - Surge protection
-- Stable macOS device identifier
+- Stable device identifier (CoreAudio device name on macOS; ALSA/PortAudio device name on Linux — reconfirm the configured `audio.device_name` on each host, since the same physical microphone can enumerate under a different name per OS/driver)
+
+**Linux note (2026-09-13):** macOS blocks microphone capture entirely
+for processes with no attached GUI/WindowServer session, which is why
+the Mac mini profile requires a physical-console or Screen Sharing
+session for anything touching the mic (see `README.md`'s Microphone
+section) — SSH cannot do it. Linux's ALSA/PortAudio stack has no
+equivalent restriction: a user in the `audio` group can open the
+microphone over a plain SSH session with no GUI involved. This is a
+genuine simplification on the Raspberry Pi profile, not a gap — it
+removes the "must run at the physical console" constraint entirely for
+that host.
 
 ### 31.2 Installation Location
 

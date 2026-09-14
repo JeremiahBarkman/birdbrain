@@ -20,6 +20,10 @@ page to appear on.
 (House Finch photo cached and served by the dashboard), two providers
 (Wikimedia + iNaturalist, config-driven), four real bugs found and
 fixed along the way — see below.
+**Linux/Raspberry Pi support**: done — fully validated live on the
+physical Pi 4B (4GB, Ubuntu 24.04), including real end-to-end bird
+detections from real outdoor audio (below), not a §29 phase — added
+2026-09-13/14 as a second host profile alongside the Mac mini.
 
 Implemented so far:
 
@@ -380,6 +384,13 @@ one-time setup step — not something scriptable or grantable over SSH.
 Worth calling out explicitly in the Phase 8 `doctor` command and
 install docs.
 
+**This entire constraint is macOS-specific (§31.1).** On the Linux/Pi
+host profile added 2026-09-13, ALSA/PortAudio has no equivalent
+GUI-session gate — a user in the `audio` group can open the microphone
+over a plain SSH session, console or not. Everything above (TCC,
+LaunchAgent-vs-LaunchDaemon, physical-console requirement) applies to
+the Mac mini profile only.
+
 Outdoor placement, weatherproofing, wind protection, and cable routing
 (§31.1) remain open regardless.
 
@@ -422,11 +433,156 @@ mic → capture → BirdNET → correct species. 0.45 is a first-pass value
 from one 30s sample, not a rigorously tuned threshold — expect to
 revisit it after more field data (§10.4 explicitly anticipates this).
 
+### Linux/Raspberry Pi support (2026-09-13)
+
+Added at the user's request, to move the deployment onto a Raspberry
+Pi rather than continue on the Mac mini alone. The requirements doc
+originally named the Mac mini/macOS as the sole target (singular
+language) — revised to name two supported host profiles rather than
+silently reinterpreting that (see the note at the top of
+`Backyard_Bird_Discovery_System_Requirements.md` and §7.1/§5.1/§31.1).
+The target Pi's actual specs, read directly off the device over SSH:
+Raspberry Pi 4 Model B, 4 GB RAM, Ubuntu 24.04.4 LTS (Noble), aarch64,
+96 GB free disk.
+
+Turned out to need very little core-logic change — `capture_service.py`,
+`segmenter.py`, `retention.py`, the database layer, image providers,
+and the web dashboard were already OS-agnostic (plain PortAudio/SQLite/
+HTTP, no macOS APIs). The actual macOS-only surface was narrow: the
+`doctor.py` platform gate (hard-failed on anything but Darwin),
+`install.sh` (same hard fail, plus brew-only Python provisioning), and
+BirdNET's runtime backend pin.
+
+The backend pin is the interesting part: `birdnetlib` tries
+`import tflite_runtime.interpreter` first and only falls back to
+`tensorflow.lite` if that's unavailable (checked directly in the
+installed package, not assumed). The Mac mini profile pins `tensorflow`
+because `tflite-runtime` has no official macOS arm64 wheel; Linux
+aarch64 does have one, and it's far lighter — the right choice for a
+4 GB Pi. `pyproject.toml` now picks the backend per `sys_platform`
+marker, so `pip install -e .` just does the right thing on each host
+with no code change needed in the adapter itself.
+
+`doctor.py`'s `check_platform` now accepts Linux (aarch64/x86_64) as
+well as Darwin, and the audio-device/microphone-permission checks give
+OS-appropriate guidance (`audio` group and ALSA on Linux, instead of
+TCC System Settings). `install.sh` gained a full Linux branch: apt
+system packages (`libportaudio2`, `libsndfile1`,
+`python3.<minor>-venv`), and — since Ubuntu 24.04's default `python3`
+is 3.12, outside the 3.9–3.11 range this project needs — an offer to
+add the `deadsnakes` PPA and install Python 3.11, mirroring the
+existing "offer to `brew install`" pattern on macOS rather than
+inventing a new one.
+
+One genuine positive divergence, not just a workaround: §31.1
+documents that macOS blocks microphone capture for any process without
+an attached GUI session, which is why the Mac mini profile needs a
+LaunchAgent (not a LaunchDaemon) and why this codebase's own live mic
+testing had to happen at the physical console, never over this SSH
+session (see the Microphone section below). Linux's ALSA/PortAudio
+stack has no such restriction — a user in the `audio` group can open
+the microphone over plain SSH, console or not. On the Pi, that
+restriction simply doesn't exist.
+
+**Deliberately out of scope here:** `systemd` unit files / boot-time
+autostart. That's the Linux half of §29 Phase 8, which hasn't been
+built for macOS's `launchd` either yet — both platforms still rely on
+`scripts/start_all.sh`/`stop_all.sh` run by hand. Worth doing once
+you're ready to stop starting services manually on either host, but
+kept separate from this change so Linux and macOS stay at equal
+footing rather than Linux jumping ahead.
+
+**Validated on the physical Pi (2026-09-13):** `./scripts/install.sh`
+run for real on `TheSource` (the Pi itself) surfaced one genuine bug
+this Mac's own test suite couldn't have caught — see "Real bug found"
+below — and, once fixed, completed cleanly: apt packages installed,
+`deadsnakes` provided Python 3.11.15, `pip install -e ".[dev]"`
+resolved `tflite-runtime` (not `tensorflow`) as intended, and
+`bird-display doctor` reported:
+
+```
+[OK  ] platform: Linux, aarch64
+[OK  ] python_version: Python 3.11.15
+[OK  ] birdnet: BirdNET v2.4 analyzed soundscape.wav in 66.7s (4 detection(s)).
+[OK  ] required_directories: All 11 data subdirectories exist under data
+[OK  ] disk_space: 94.8 GB free
+[FAIL] audio_devices: No input (microphone) devices found.
+```
+
+The `audio_devices` failure is expected, not a bug — no USB microphone
+is plugged into the Pi yet. Everything software-side that can be
+verified without a mic attached now passes.
+
+BirdNET correctly found the same 4 detections on this Pi as it did on
+the Mac mini for the identical test clip — same species, same model
+version, different (much lighter) TFLite backend. The one-off `doctor`
+check took **66.7s to analyze the 120s test clip**, versus **5.4s on
+the M1 Mac mini** (§29 Phase 1 validation, above) — roughly 12x slower
+— but that figure includes a cold model load, and overstates the real
+per-segment cost: once `analyze run` is actually running continuously
+(model loaded once, reused for every segment), real live 30-second
+segments analyzed in **~3.5s each**, not the ~17s a naive linear
+scaling from the one-off figure would suggest. Comfortably inside
+real-time with real margin before the queue could back up (§19.2's
+warning threshold is 10 minutes of backlog) — confirmed live: `queue
+status` showed `incoming 0 / processing 0 / processed 9 / failed 0`
+after several minutes of continuous capture, nothing backing up.
+Default concurrency (§19.1, one BirdNET worker) holds fine on the Pi
+4. CPU/RSS memory weren't captured the way the original Mac spike did
+— worth doing if tuning concurrency further, but not blocking given
+how much margin the 3.5s number already leaves.
+
+**Real bug found by this run, not caught by anything runnable on the
+Mac:** `pyproject.toml` declared `numpy>=1.24` with no upper bound.
+`tensorflow` (macOS) happens to transitively constrain `numpy<2`
+itself, so the Mac never surfaced this. `tflite-runtime==2.14.0` (last
+released in 2023, before NumPy 2.0's ABI break) has no such guard —
+pip resolved `numpy 2.4.6` on the Pi, and BirdNET's model load crashed
+with `AttributeError: _ARRAY_API not found`. Fixed by making
+`numpy<2` an explicit top-level constraint rather than an accident of
+tensorflow's metadata, so both platforms share one intentional floor
+instead of the Linux path being quietly unprotected.
+
+**Second real bug, found the same day the microphone was actually
+connected:** a Pi power-cycle (moving the device) renumbered the
+mic's ALSA hardware index from `hw:1,0` to `hw:3,0` — USB card indices
+are assigned by enumeration order at boot on Linux, unlike macOS's
+stable CoreAudio names, and PortAudio bakes that index straight into
+the device name it reports. The exact-string match in
+`find_input_device` (working as designed — §26.1's retry-with-backoff,
+never crashing) could never have recovered from this on its own: the
+configured name was permanently "not found" until someone noticed and
+re-edited `config.yaml`, which defeats §20's "recover automatically
+after reboots" specifically on this host profile. Fixed by falling
+back to a match with the trailing `(hw:N,M)` suffix stripped from both
+sides when the exact match fails — a config written against one boot's
+index now resolves fine after a later reboot renumbers it. 6 new unit
+tests; macOS names never have this suffix, so the fallback is a
+no-op there.
+
+**Fully validated live, end to end, 2026-09-14:** with the microphone
+reconnected and both bugs above fixed, `capture run` → `analyze run`
+produced genuine detections from real outdoor bird calls at Carlton,
+OR — American Robin (0.67 confidence) and Cedar Waxwing (0.57) — via
+`bird-display detections today`. Every §19.2 queue-health number was
+clean throughout (`incoming 0 / processing 0 / processed 9 / failed
+0`). This branch is ready to merge to `main`.
+
+### Data note
+
+The Pi starts with an empty database/cache, by design — no data
+migration from the Mac mini's `data/` was requested or performed. The
+Mac mini's existing detection history stays on the Mac mini.
+
 ## Setup
 
-Requires macOS (Apple Silicon recommended) with Python 3.9–3.11
-(tensorflow's supported range), [git](https://git-scm.com) to clone
-this repo, and a working microphone.
+Two host profiles are supported (requirements §7.1): a macOS host
+(Apple Silicon recommended) and an Ubuntu 24.04 LTS (aarch64) Linux
+host such as a Raspberry Pi 4B. Both need Python 3.9–3.11
+(tensorflow's/tflite-runtime's supported range — Ubuntu 24.04's
+default `python3` is 3.12, too new; see below) and
+[git](https://git-scm.com) to clone this repo, and a working
+microphone.
 
 ```bash
 git clone <this repo>
@@ -435,6 +591,20 @@ cd birdbrain
 source .venv/bin/activate
 cp config/config.example.yaml config/config.yaml   # done automatically by install.sh if missing
 ```
+
+`install.sh` detects the OS and branches accordingly:
+
+- **macOS**: uses full `tensorflow` as the BirdNET backend (no
+  official macOS arm64 `tflite-runtime` wheels exist); offers to
+  `brew install python@3.11` if no compatible interpreter is found.
+- **Linux (Ubuntu)**: uses the much lighter `tflite-runtime` instead
+  (official aarch64 wheels exist, and it's a better fit for a
+  resource-constrained host like a 4 GB Pi — `birdnetlib` prefers it
+  automatically whenever it's importable); installs `libportaudio2`,
+  `libsndfile1`, and the matching `python3.<minor>-venv` package via
+  `apt-get`; offers to add the `deadsnakes` PPA and install Python 3.11
+  if the system's default `python3` is out of range (as it is on
+  Ubuntu 24.04).
 
 `install.sh` does more than create a venv:
 
@@ -483,6 +653,15 @@ actually open the microphone.
   project is only developed and tested on Apple Silicon, so runtime
   behavior there (BirdNET performance, audio device handling) isn't
   verified. Please open an issue if you hit something on Intel.
+- **The `apt-get`/`add-apt-repository` sudo prompts on Linux.** Adding
+  the `deadsnakes` PPA and installing system packages needs root —
+  `install.sh` shells out to `sudo` for these steps, so expect a
+  password prompt (or run the script as a user with passwordless
+  sudo).
+- **No microphone permission prompt on Linux** — there's no TCC-style
+  dialog to answer. If `doctor`'s `microphone_permission` check fails,
+  it's almost always that the user isn't in the `audio` group yet
+  (`sudo usermod -aG audio $USER`, then log out and back in).
 
 Edit `config/config.yaml`: at minimum set `location.latitude` /
 `location.longitude` and `audio.device_name` for your installation.

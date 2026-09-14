@@ -11,15 +11,31 @@ requires-python = ">=3.9,<3.12"
 dependencies = [
     "birdnetlib>=0.17",
     # birdnetlib doesn't declare these itself: librosa loads audio,
-    # tensorflow supplies the TFLite interpreter it runs the model with.
-    # tflite-runtime has no official macOS arm64 wheels, so we use the
-    # full tensorflow package (official arm64 wheels since 2.13).
+    # and it needs a TFLite interpreter to run the model with — it
+    # imports tflite_runtime.interpreter if available and only falls
+    # back to tensorflow.lite otherwise (see birdnetlib/analyzer.py).
+    # So the two platforms get different backends on purpose:
+    #   - macOS: tflite-runtime has no official macOS arm64 wheels, so
+    #     we use the full tensorflow package (official arm64 wheels
+    #     since 2.13).
+    #   - Linux (incl. Raspberry Pi aarch64): tflite-runtime does
+    #     publish official wheels, and it's far lighter than
+    #     tensorflow — worth it on a resource-constrained host like a
+    #     4 GB Pi.
     "librosa>=0.10",
-    "tensorflow>=2.13,<2.17",
+    "tensorflow>=2.13,<2.17; sys_platform == 'darwin'",
+    "tflite-runtime>=2.13,<2.15; sys_platform == 'linux'",
     "pydantic>=2.5",
     "pyyaml>=6.0",
     "sounddevice>=0.4.6",
-    "numpy>=1.24",
+    # <2 is required, not incidental: tflite-runtime hasn't been rebuilt
+    # since before NumPy 2.0's ABI break (last release 2.14.0, 2023) and
+    # segfaults/AttributeErrors under numpy>=2 ("_ARRAY_API not found") -
+    # confirmed on the Raspberry Pi (2026-09-13). tensorflow (macOS)
+    # already constrains numpy<2 transitively for the same underlying
+    # reason, so this is one explicit floor for both platforms rather
+    # than relying on that being true forever.
+    "numpy>=1.24,<2",
     "click>=8.1",
     # Local status dashboard (§22). A minimal Flask app is simpler and
     # better-tested than hand-rolling HTTP routing/JSON on http.server.

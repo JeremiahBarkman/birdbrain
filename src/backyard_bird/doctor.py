@@ -7,7 +7,7 @@ scripts). install.sh runs `bird-display doctor` as its final
 prerequisite gate after setting up the venv.
 
 Not every §25 doctor item is implemented yet (network access, frame
-configuration, image-provider configuration, launchd service
+configuration, image-provider configuration, launchd/systemd service
 definitions) — those are Phase 4+/8 concerns tied to features not yet
 built. What's here covers what actually gates a fresh install:
 platform/Python/BirdNET/directories/disk/audio devices/microphone
@@ -39,34 +39,46 @@ class CheckResult:
 
 
 def check_platform() -> CheckResult:
-    """This project assumes macOS throughout (CoreAudio device names,
-    the launcher .command files, launchd for Phase 8) — catch a
-    non-macOS run immediately rather than let someone burn ten minutes
-    on a tensorflow install that was never going to finish working.
+    """This project targets two host profiles (requirements §7.1): a
+    macOS Mac mini and a Linux (Ubuntu) host such as a Raspberry Pi —
+    catch anything else immediately rather than let someone burn ten
+    minutes on a doomed tensorflow/tflite-runtime install.
     """
     import platform
 
     system = platform.system()
-    if system != "Darwin":
-        return CheckResult(
-            "platform",
-            "fail",
-            f"Detected {system}, but this project targets macOS. Audio capture, the "
-            "installer, and the desktop launcher all assume macOS.",
-        )
-
     machine = platform.machine()
-    if machine == "x86_64":
-        return CheckResult(
-            "platform",
-            "warn",
-            "Intel Mac detected. Every pinned dependency (including tensorflow) "
-            "publishes an x86_64 wheel, so `pip install` is expected to succeed — "
-            "but this project is only developed and tested on Apple Silicon "
-            "hardware, so runtime behavior (BirdNET performance, audio device "
-            "handling) hasn't been verified there. Report issues if you hit any.",
-        )
-    return CheckResult("platform", "pass", f"macOS, {machine}")
+
+    if system == "Darwin":
+        if machine == "x86_64":
+            return CheckResult(
+                "platform",
+                "warn",
+                "Intel Mac detected. Every pinned dependency (including tensorflow) "
+                "publishes an x86_64 wheel, so `pip install` is expected to succeed — "
+                "but this project is only developed and tested on Apple Silicon "
+                "hardware, so runtime behavior (BirdNET performance, audio device "
+                "handling) hasn't been verified there. Report issues if you hit any.",
+            )
+        return CheckResult("platform", "pass", f"macOS, {machine}")
+
+    if system == "Linux":
+        if machine not in ("aarch64", "x86_64"):
+            return CheckResult(
+                "platform",
+                "warn",
+                f"Linux on {machine} detected. This project is developed and tested "
+                "against Ubuntu 24.04 LTS on aarch64 (Raspberry Pi 4B) — tflite-runtime "
+                f"may not publish a wheel for {machine}. Report issues if you hit any.",
+            )
+        return CheckResult("platform", "pass", f"Linux, {machine}")
+
+    return CheckResult(
+        "platform",
+        "fail",
+        f"Detected {system}, but this project targets macOS or Linux (Ubuntu). Audio "
+        "capture and the installer assume one of those.",
+    )
 
 
 def check_python_version() -> CheckResult:
@@ -189,7 +201,7 @@ def check_disk_space(data_directory: Path) -> CheckResult:
 
 
 def check_audio_devices(configured_device_name: str | None = None) -> CheckResult:
-    from backyard_bird.audio.devices import list_input_devices
+    from backyard_bird.audio.devices import find_input_device, list_input_devices
 
     try:
         devices = list_input_devices()
@@ -197,15 +209,23 @@ def check_audio_devices(configured_device_name: str | None = None) -> CheckResul
         return CheckResult("audio_devices", "fail", f"Could not query audio devices: {exc}")
 
     if not devices:
-        return CheckResult(
-            "audio_devices",
-            "fail",
-            "No input (microphone) devices found. Check macOS microphone permissions "
-            "for your terminal/Python and that a microphone is connected.",
-        )
+        import platform
+
+        if platform.system() == "Linux":
+            hint = (
+                "Check that a microphone is connected, that ALSA/PulseAudio can see it "
+                "(`arecord -l`), and that this user is in the `audio` group."
+            )
+        else:
+            hint = "Check macOS microphone permissions for your terminal/Python and that a microphone is connected."
+        return CheckResult("audio_devices", "fail", f"No input (microphone) devices found. {hint}")
 
     names = [d.name for d in devices]
-    if configured_device_name and configured_device_name not in names:
+    # find_input_device (not a plain membership check) so this agrees with what
+    # capture_service.py would actually resolve - including its ALSA
+    # "(hw:N,M)" fallback match, so doctor doesn't warn about a device
+    # capture would in fact find fine.
+    if configured_device_name and find_input_device(configured_device_name) is None:
         return CheckResult(
             "audio_devices",
             "warn",
@@ -217,12 +237,17 @@ def check_audio_devices(configured_device_name: str | None = None) -> CheckResul
 
 def check_microphone_permission(configured_device_name: str | None = None) -> CheckResult:
     """Distinct from check_audio_devices: listing devices just queries
-    CoreAudio's device table and needs no permission, but actually
-    opening a stream does (macOS's per-app microphone TCC grant) — the
-    §25 "microphone permissions" item is separate from "audio-device
-    availability" for exactly this reason. Attempts the same short
-    real capture `bird-display audio test` does, so a denied
-    permission shows up here instead of when capture starts.
+    the device table and needs no permission, but actually opening a
+    stream can (macOS's per-app microphone TCC grant; on Linux, ALSA
+    device-file permissions/the `audio` group) — the §25 "microphone
+    permissions" item is separate from "audio-device availability" for
+    exactly this reason. Attempts the same short real capture
+    `bird-display audio test` does, so a denied permission shows up
+    here instead of when capture starts.
+
+    Linux has no TCC-style GUI-session requirement (§31.1) — this
+    check can run the same over SSH as at a physical console, unlike
+    on macOS.
     """
     from backyard_bird.audio.devices import find_input_device, list_input_devices
 
@@ -241,31 +266,46 @@ def check_microphone_permission(configured_device_name: str | None = None) -> Ch
     import numpy as np
     import sounddevice as sd
 
+    import platform
+
     try:
         frames = sd.rec(int(0.3 * sample_rate), samplerate=sample_rate, channels=1, dtype="int16", device=device)
         sd.wait()
     except Exception as exc:
-        return CheckResult(
-            "microphone_permission",
-            "fail",
-            f"Could not open the microphone: {exc}. On macOS: System Settings > "
-            "Privacy & Security > Microphone, and grant access to whatever runs "
-            "this (Terminal/iTerm) — if it isn't listed there yet, run "
-            "`bird-display audio test` once to trigger the permission prompt.",
-        )
+        if platform.system() == "Linux":
+            hint = (
+                "On Linux: confirm this user is in the `audio` group (`groups`; "
+                "`sudo usermod -aG audio $USER` then log back in if not), and that "
+                "no other process (PulseAudio/PipeWire exclusive mode, another "
+                "`capture run`) already holds the device open."
+            )
+        else:
+            hint = (
+                "On macOS: System Settings > Privacy & Security > Microphone, and grant "
+                "access to whatever runs this (Terminal/iTerm) — if it isn't listed there "
+                "yet, run `bird-display audio test` once to trigger the permission prompt."
+            )
+        return CheckResult("microphone_permission", "fail", f"Could not open the microphone: {exc}. {hint}")
 
     peak = int(np.abs(frames).max()) if frames.size else 0
     if peak == 0:
+        silent_denial_note = (
+            "or macOS silently denying microphone access without raising an error "
+            "(it does this on some versions)"
+            if platform.system() != "Linux"
+            # No known Linux equivalent of macOS's silent TCC denial — ALSA/PortAudio
+            # errors out instead of handing back silence for a permission problem.
+            else "or a genuinely misconfigured input source (check `alsamixer`)"
+        )
         return CheckResult(
             "microphone_permission",
             "warn",
             "Captured 0.3s of complete silence. Most likely `bird-display capture run` "
             "is already using this device (some USB mics hand a second, concurrent "
             "listener silence instead of an error rather than truly sharing the "
-            "stream) — harmless if so. Otherwise: a genuinely quiet room, or macOS "
-            "silently denying microphone access without raising an error (it does "
-            "this on some versions). Run `bird-display audio test` on its own, with "
-            "capture stopped, while making noise near the mic to tell which.",
+            f"stream) — harmless if so. Otherwise: a genuinely quiet room, {silent_denial_note}. "
+            "Run `bird-display audio test` on its own, with capture stopped, while "
+            "making noise near the mic to tell which.",
         )
     return CheckResult("microphone_permission", "pass", "Captured real audio from the microphone.")
 

@@ -25,11 +25,24 @@ MIN_FREE_GB_FOR_INSTALL=3
 # cost several minutes and a large download.
 # ---------------------------------------------------------------------------
 
-if [ "$(uname -s)" != "Darwin" ]; then
-    echo "This project targets macOS — audio capture, the installer, and the desktop"
-    echo "launcher all assume it. Detected: $(uname -s)."
-    exit 1
-fi
+OS_NAME="$(uname -s)"
+IS_LINUX=false
+case "$OS_NAME" in
+    Darwin) ;;
+    Linux)
+        IS_LINUX=true
+        if ! command -v apt-get >/dev/null 2>&1; then
+            echo "This project's Linux support targets Ubuntu (apt-based). No apt-get found"
+            echo "on this host — see requirements §7.1 for the supported host profiles."
+            exit 1
+        fi
+        ;;
+    *)
+        echo "This project targets macOS or Ubuntu Linux — audio capture and the installer"
+        echo "assume one of those. Detected: $OS_NAME."
+        exit 1
+        ;;
+esac
 
 avail_kb="$(df -Pk . | tail -1 | awk '{print $4}')"
 avail_gb=$((avail_kb / 1024 / 1024))
@@ -75,10 +88,45 @@ find_compatible_python() {
 PYTHON_BIN="$(find_compatible_python || true)"
 
 if [ -z "$PYTHON_BIN" ]; then
-    echo "No compatible Python found (need 3.${MIN_MINOR}-3.$((MAX_MINOR_EXCLUSIVE - 1)); tensorflow doesn't yet support newer)."
+    echo "No compatible Python found (need 3.${MIN_MINOR}-3.$((MAX_MINOR_EXCLUSIVE - 1)); tensorflow/tflite-runtime don't yet support newer)."
     echo
 
-    if command -v brew >/dev/null 2>&1 && [ -t 0 ]; then
+    if [ "$IS_LINUX" = true ]; then
+        # Ubuntu 24.04 ships Python 3.12 as the default python3, outside
+        # tensorflow's/tflite-runtime's supported range — deadsnakes is the
+        # standard way to get an older interpreter alongside it without
+        # touching the system's default python3.
+        SUDO=""
+        [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+        if [ -t 0 ]; then
+            echo "Install Python 3.11 via the deadsnakes PPA now?"
+            read -r -p "  add-apt-repository ppa:deadsnakes/ppa && apt-get install python3.11 [y/N] " reply
+            if [[ "$reply" =~ ^[Yy]$ ]]; then
+                $SUDO apt-get update && \
+                $SUDO apt-get install -y software-properties-common && \
+                $SUDO add-apt-repository -y ppa:deadsnakes/ppa && \
+                $SUDO apt-get update && \
+                $SUDO apt-get install -y python3.11 python3.11-venv
+                PYTHON_BIN="$(command -v python3.11 || true)"
+                if [ -z "$PYTHON_BIN" ] || ! python_is_compatible "$PYTHON_BIN"; then
+                    echo "python3.11 still isn't usable after install — please investigate your apt setup."
+                    exit 1
+                fi
+            else
+                echo "Skipped. Install a compatible Python yourself, then re-run this script."
+                exit 1
+            fi
+        else
+            cat <<EOF
+Non-interactive shell — skipping the deadsnakes install. Install Python 3.11
+yourself, then re-run this script:
+  sudo add-apt-repository ppa:deadsnakes/ppa
+  sudo apt-get update
+  sudo apt-get install python3.11 python3.11-venv
+EOF
+            exit 1
+        fi
+    elif command -v brew >/dev/null 2>&1 && [ -t 0 ]; then
         echo "Homebrew is available. Install Python 3.11 now?"
         read -r -p "  brew install python@3.11 [y/N] " reply
         if [[ "$reply" =~ ^[Yy]$ ]]; then
@@ -114,6 +162,32 @@ fi
 echo "Using $("$PYTHON_BIN" --version) at $PYTHON_BIN"
 
 # ---------------------------------------------------------------------------
+# Step 1.5 (Linux only): system packages the pip install can't provide.
+#
+# - libportaudio2: the runtime PortAudio library sounddevice's wheel
+#   binds against (the wheel itself ships the Python/cffi glue, not
+#   the system audio library).
+# - libsndfile1: librosa's soundfile backend needs it to decode WAV.
+# - python3.<minor>-venv: Debian/Ubuntu split the stdlib venv module
+#   out of the base python3.x package — this is the same interpreter
+#   found/installed above, just made sure its venv module is present.
+# Best-effort and idempotent (apt-get install on an already-installed
+# package is a no-op), so re-running install.sh is always safe.
+# ---------------------------------------------------------------------------
+
+if [ "$IS_LINUX" = true ]; then
+    PY_MINOR="$("$PYTHON_BIN" -c 'import sys; print(sys.version_info.minor)')"
+    SUDO=""
+    [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+    echo "Installing required system packages (libportaudio2, libsndfile1, python3.${PY_MINOR}-venv)..."
+    if ! $SUDO apt-get update || ! $SUDO apt-get install -y libportaudio2 libsndfile1 "python3.${PY_MINOR}-venv"; then
+        echo "apt-get install failed — install these manually and re-run:"
+        echo "  sudo apt-get install libportaudio2 libsndfile1 python3.${PY_MINOR}-venv"
+        exit 1
+    fi
+fi
+
+# ---------------------------------------------------------------------------
 # Step 2: create the venv and install the project.
 # ---------------------------------------------------------------------------
 
@@ -128,9 +202,10 @@ pip install --upgrade pip
 if ! pip install -e ".[dev]"; then
     echo
     echo "Dependency install failed — see the pip error above."
-    echo "This is most often tensorflow failing to find a wheel for this machine's"
-    echo "architecture/OS version. Check https://pypi.org/project/tensorflow/ for"
-    echo "supported platforms, or open an issue with the error output."
+    echo "This is most often tensorflow (macOS) or tflite-runtime (Linux) failing to"
+    echo "find a wheel for this machine's architecture/OS version. Check"
+    echo "https://pypi.org/project/tensorflow/ or https://pypi.org/project/tflite-runtime/"
+    echo "for supported platforms, or open an issue with the error output."
     exit 1
 fi
 
