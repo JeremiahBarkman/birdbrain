@@ -1554,7 +1554,22 @@ bird-display frame inspect
 bird-display frame test
 bird-display services status
 bird-display doctor
+bird-display setup
 ```
+
+**Addition (2026-09-14):** `setup` was not in the original list above.
+Added once making the project easy to install for other users (e.g.
+sharing it publicly, or Michael's use of the Mac build) became an
+actual goal: an interactive first-run wizard that geocodes a
+city/state/ZIP into `location.latitude/longitude` and lets the user
+pick a detected microphone by name, rather than requiring a fresh
+install to hand-edit `config.yaml`'s two fields that otherwise fail
+*silently* (§10.3's geographic filter quietly excludes real species at
+a wrong location; a stale/placeholder device name makes capture retry
+forever with no crash — see §31.1's Linux note on ALSA device-index
+renumbering for a real instance of the second one). `scripts/install.sh`
+offers to run it automatically right after creating `config.yaml` from
+the example, for a freshly created config only.
 
 The `doctor` command shall test:
 

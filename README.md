@@ -24,6 +24,12 @@ fixed along the way — see below.
 physical Pi 4B (4GB, Ubuntu 24.04), including real end-to-end bird
 detections from real outdoor audio (below), not a §29 phase — added
 2026-09-13/14 as a second host profile alongside the Mac mini.
+**Interactive setup wizard** (`bird-display setup`, below): done —
+geocodes a city/state/ZIP into `location`, lets you pick a detected
+microphone by name, wired into `install.sh`. First piece of the
+"make this easy to install for other users" effort (below the Linux
+notes) — auto-start service integration and public-repo readiness are
+the next two, not started yet.
 
 Implemented so far:
 
@@ -574,6 +580,59 @@ The Pi starts with an empty database/cache, by design — no data
 migration from the Mac mini's `data/` was requested or performed. The
 Mac mini's existing detection history stays on the Mac mini.
 
+### Interactive setup wizard (2026-09-14)
+
+Prompted directly by the hour spent debugging exactly this class of
+problem on the Pi above: `location.latitude/longitude` and
+`audio.device_name` both fail *silently* when wrong, not loudly. A
+placeholder or wrong location doesn't error — §10.3's geographic
+filter just quietly excludes real local species (or admits implausible
+ones). A placeholder or stale device name doesn't error either —
+`capture_service.py` retries forever with backoff exactly as §26.1
+specifies, which is correct behavior, but from the outside it just
+looks like "nothing is happening," and a reboot can silently invalidate
+a previously-correct name on Linux (the ALSA `hw:N,M` renumbering bug
+above). A new install shouldn't have to rediscover either the hard way,
+especially someone less inclined to go digging through JSON log lines
+than this session did.
+
+`bird-display setup` (`src/backyard_bird/setup_wizard.py` for the
+testable logic, wired into `cli.py`) walks through both:
+
+- **Location**: prompts for a city/state or ZIP, geocodes it via
+  [Nominatim](https://nominatim.openstreetmap.org) (OpenStreetMap's
+  free geocoder — no API key, so a new user isn't blocked on getting
+  one just to finish setup), shows the resolved coordinates and place
+  name for confirmation before saving. Sends a descriptive User-Agent
+  per Nominatim's usage policy — the exact same lesson this project
+  already paid for once with Wikimedia's image API returning a silent
+  403 (Phase 4 notes, above); no reason to relearn it here.
+- **Microphone**: lists real detected input devices (reusing
+  `audio/devices.py`) and lets you pick one by number, rather than
+  typing a name blind. Auto-suggests when there's exactly one.
+
+Both write into the existing `config.yaml` via `set_config_value` — a
+targeted regex substitution of just the one line, not a full
+parse-and-rewrite. Deliberate: a full YAML round-trip would need a
+comment-preserving library (e.g. `ruamel.yaml`) as a new dependency to
+avoid silently stripping `config.example.yaml`'s field-documentation
+comments, which is exactly the kind of dependency CLAUDE.md's rule 5
+("don't introduce dependencies without a clear reason") asks to avoid
+when a much simpler approach covers the actual need. Whatever value is
+written is passed through PyYAML's own dumper to decide whether it
+needs quoting — chosen specifically because hand-rolled quoting rules
+are exactly how this project shipped the ALSA-device-name bug above in
+the first place (`TONOR G11 USB microphone: Audio (hw:1,0)`, written
+unquoted, broke YAML parsing outright). Verified live against the real
+Nominatim API (not just mocked in tests) and the real CLI command,
+end to end, before being wired into `install.sh`.
+
+`install.sh` now offers to run it automatically right after creating
+`config.yaml` from the example — only for a freshly created config, so
+re-running the installer never clobbers a setup someone already tuned
+by hand. 15 new unit tests (`test_setup_wizard.py` for geocoding/config
+editing, `test_cli_setup.py` for the interactive prompt flow).
+
 ## Setup
 
 Two host profiles are supported (requirements §7.1): a macOS host
@@ -663,8 +722,14 @@ actually open the microphone.
   it's almost always that the user isn't in the `audio` group yet
   (`sudo usermod -aG audio $USER`, then log out and back in).
 
-Edit `config/config.yaml`: at minimum set `location.latitude` /
-`location.longitude` and `audio.device_name` for your installation.
+`install.sh` offers to run `bird-display setup` right after creating
+`config.yaml` — an interactive wizard that geocodes a city/state/ZIP
+into `location.latitude`/`location.longitude` and lets you pick a
+detected microphone by name, instead of hand-editing those two fields.
+Run it again any time (`bird-display setup`) to change either. If you
+skip it, edit `config/config.yaml` directly: at minimum set
+`location.latitude`/`location.longitude` and `audio.device_name` for
+your installation.
 
 ### Uninstalling
 
@@ -713,6 +778,7 @@ section above for why.
 ## Usage
 
 ```bash
+bird-display setup    # interactive: location + microphone
 bird-display doctor
 bird-display config validate
 bird-display audio list-devices

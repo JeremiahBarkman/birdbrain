@@ -209,10 +209,34 @@ if ! pip install -e ".[dev]"; then
     exit 1
 fi
 
+config_freshly_created=false
 if [ ! -f config/config.yaml ]; then
     cp config/config.example.yaml config/config.yaml
     echo "Created config/config.yaml from the example."
-    echo "Edit location.latitude/longitude and audio.device_name before running anything."
+    config_freshly_created=true
+fi
+
+# location.latitude/longitude and audio.device_name are the two fields
+# that fail *silently* rather than loudly if left at their placeholder
+# values (§10.3's geographic filter just quietly excludes real local
+# species; a wrong/stale device name makes capture retry forever with
+# no crash — see requirements §31.1 and README's Linux/Raspberry Pi
+# notes for the real instance of each). Only offered for a freshly
+# created config, not on every re-run of install.sh, so this never
+# clobbers a setup someone already tuned by hand.
+if [ "$config_freshly_created" = true ]; then
+    if [ -t 0 ]; then
+        echo
+        echo "Run the interactive setup wizard now to set your location and pick a"
+        echo "microphone? (You can also run 'bird-display setup' any time later.)"
+        read -r -p "  Run setup now? [Y/n] " reply
+        if [[ ! "$reply" =~ ^[Nn]$ ]]; then
+            bird-display setup
+        fi
+    else
+        echo "Edit location.latitude/longitude and audio.device_name before running anything"
+        echo "(or run 'bird-display setup' interactively once you have a terminal)."
+    fi
 fi
 
 # ---------------------------------------------------------------------------

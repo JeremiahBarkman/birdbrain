@@ -4,9 +4,12 @@ See requirements §25 for the full planned subcommand list. Implemented
 so far: config, audio device discovery/test, continuous capture,
 one-shot and queue-driven BirdNET analysis, database migrate/
 integrity-check, queue status, detection/species timeline queries,
-image acquisition, the live status dashboard, and `doctor` (checks
+image acquisition, the live status dashboard, `doctor` (checks
 only — network access, frame configuration, image-provider
-configuration, and launchd service definitions aren't covered yet).
+configuration, and launchd/systemd service definitions aren't covered
+yet), and `setup` (an interactive first-run wizard for location and
+microphone selection — not in the original §25 list, added 2026-09-14
+once a public/friendlier install became a real goal; see README).
 Not yet built: slideshow/frame commands (Phase 6+).
 """
 from __future__ import annotations
@@ -674,6 +677,96 @@ def doctor_cmd(ctx: click.Context) -> None:
 
     if any(r.status == "fail" for r in results):
         sys.exit(1)
+
+
+@cli.command("setup")
+@click.pass_context
+def setup_cmd(ctx: click.Context) -> None:
+    """Interactive first-run setup: region and microphone.
+
+    Both fields this walks through fail *silently* rather than loudly
+    if left at their config.example.yaml placeholder values (or, for
+    the microphone on Linux, after a reboot renumbers its ALSA index -
+    see requirements §31.1): capture retries forever with no crash,
+    and geographic filtering just quietly excludes real local species.
+    This exists so a new install doesn't have to discover either the
+    hard way.
+    """
+    from backyard_bird.audio.devices import list_input_devices
+    from backyard_bird.setup_wizard import geocode_location, set_config_value
+
+    config_path: Path = ctx.obj["config_path"]
+    example_path = config_path.parent / "config.example.yaml"
+
+    if not config_path.exists():
+        if not example_path.exists():
+            click.echo(f"Neither {config_path} nor {example_path} exists.", err=True)
+            sys.exit(1)
+        config_path.parent.mkdir(parents=True, exist_ok=True)
+        config_path.write_text(example_path.read_text())
+        click.echo(f"Created {config_path} from the example.")
+
+    click.echo()
+    click.echo("=== Location (BirdNET's geographic species filter, §10.3) ===")
+    while True:
+        place = click.prompt(
+            "City/state or ZIP near the microphone (blank to skip)", default="", show_default=False
+        )
+        if not place.strip():
+            click.echo("Skipped — edit location.latitude/longitude in config.yaml by hand.")
+            break
+        result = geocode_location(place)
+        if result is None:
+            click.echo("Couldn't find that place (or the lookup failed — check network access).")
+            if click.confirm("Try again?", default=True):
+                continue
+            click.echo("Skipped — edit location.latitude/longitude in config.yaml by hand.")
+            break
+        click.echo(f"Found: {result.display_name}")
+        click.echo(f"  latitude:  {result.latitude}")
+        click.echo(f"  longitude: {result.longitude}")
+        if not click.confirm("Use this location?", default=True):
+            continue
+        ok_lat = set_config_value(config_path, "location", "latitude", result.latitude)
+        ok_lon = set_config_value(config_path, "location", "longitude", result.longitude)
+        if ok_lat and ok_lon:
+            click.echo("Saved. (Location data © OpenStreetMap contributors.)")
+        else:
+            click.echo("Could not write to config.yaml — edit location.latitude/longitude by hand.", err=True)
+        break
+
+    click.echo()
+    click.echo("=== Microphone (§8.1) ===")
+    devices = list_input_devices()
+    if not devices:
+        click.echo(
+            "No input devices found. Plug in a microphone and re-run `bird-display setup`, "
+            "or edit audio.device_name in config.yaml by hand once one is connected."
+        )
+    else:
+        if len(devices) == 1:
+            chosen = devices[0]
+            click.echo(f"Found one input device: {chosen.name}")
+            use_it = click.confirm("Use this microphone?", default=True)
+        else:
+            click.echo("Multiple input devices found:")
+            for d in devices:
+                click.echo(f"  [{d.index}] {d.name}")
+            choice = click.prompt("Which device? (number, blank to skip)", default="", show_default=False)
+            chosen = next((d for d in devices if str(d.index) == choice.strip()), None) if choice.strip() else None
+            use_it = chosen is not None
+
+        if use_it and chosen is not None:
+            if set_config_value(config_path, "audio", "device_name", chosen.name):
+                click.echo("Saved.")
+            else:
+                click.echo("Could not write to config.yaml — edit audio.device_name by hand.", err=True)
+        else:
+            click.echo("Skipped — edit audio.device_name in config.yaml by hand.")
+
+    click.echo()
+    click.echo("Setup complete. Run `bird-display doctor` to verify, or")
+    click.echo("`bird-display config validate` to see what's now configured.")
 
 
 if __name__ == "__main__":
