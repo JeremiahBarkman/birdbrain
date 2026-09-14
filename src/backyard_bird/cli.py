@@ -708,6 +708,9 @@ def setup_cmd(ctx: click.Context) -> None:
 
     click.echo()
     click.echo("=== Location (BirdNET's geographic species filter, §10.3) ===")
+    click.echo("'City, State' (e.g. 'Carlton, OR') is least ambiguous — a bare ZIP/postal")
+    click.echo("code can match a different country (confirmed live: US ZIP 97111 also")
+    click.echo("matched a location in Lithuania). Always confirm before saving, below.")
     while True:
         place = click.prompt(
             "City/state or ZIP near the microphone (blank to skip)", default="", show_default=False

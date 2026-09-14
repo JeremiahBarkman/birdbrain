@@ -633,6 +633,19 @@ re-running the installer never clobbers a setup someone already tuned
 by hand. 15 new unit tests (`test_setup_wizard.py` for geocoding/config
 editing, `test_cli_setup.py` for the interactive prompt flow).
 
+**Real gotcha found running this live on the Pi, the first time anyone
+actually typed a ZIP code into it:** Carlton, OR's real ZIP, `97111`,
+geocoded to **Kretinga, Lithuania** — a bare postal code with no
+country/state context is globally ambiguous, and Nominatim's top match
+wasn't even close. The confirm-before-saving step (always shown,
+including the full `display_name` — "Lietuva" was right there in the
+output) caught it correctly and cost nothing but a retry with a more
+specific query ("Carlton, OR" instead of "97111"). Rather than treat
+"it got caught" as sufficient on its own, the prompt now says so
+explicitly up front — "'City, State' is least ambiguous... a bare
+ZIP/postal code can match a different country" — so a new user sees
+the warning before typing, not just the confirmation after.
+
 ## Setup
 
 Two host profiles are supported (requirements §7.1): a macOS host
