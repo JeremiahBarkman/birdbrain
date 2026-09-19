@@ -169,7 +169,7 @@ def test_list_species_summary(conn: sqlite3.Connection) -> None:
     assert len(summary) == 1
     assert summary[0].common_name == "Black-capped Chickadee"
     assert summary[0].detection_count == 1
-    assert summary[0].avg_confidence == 0.81
+    assert summary[0].highest_confidence == 0.81
 
 
 def test_list_species_summary_filters_by_confidence_and_date(conn: sqlite3.Connection) -> None:
@@ -206,6 +206,24 @@ def test_list_species_summary_filters_by_confidence_and_date(conn: sqlite3.Conne
             False,
             None,
         )
+        # A second, lower-confidence chickadee detection today too — so
+        # the "today" grouping below has two surviving detections, not
+        # one, and can actually distinguish "highest" from "average"
+        # rather than the two being coincidentally identical.
+        insert_detection(
+            conn,
+            segment_id,
+            chickadee_id,
+            datetime(2026, 8, 18, 9, 30, 0, tzinfo=timezone.utc),
+            5.0,
+            8.0,
+            0.60,
+            1.0,
+            None,
+            None,
+            False,
+            None,
+        )
         # Finch: only a low-confidence detection today.
         insert_detection(
             conn,
@@ -226,7 +244,7 @@ def test_list_species_summary_filters_by_confidence_and_date(conn: sqlite3.Conne
     high_confidence_only = list_species_summary(conn, min_confidence=0.75)
     assert [r.common_name for r in high_confidence_only] == ["Black-capped Chickadee"]
     assert high_confidence_only[0].detection_count == 1  # only the 0.90 detection counted
-    assert high_confidence_only[0].avg_confidence == 0.90
+    assert high_confidence_only[0].highest_confidence == 0.90
 
     # A date range narrows both which species appear and their aggregates.
     today_only = list_species_summary(
@@ -236,8 +254,13 @@ def test_list_species_summary_filters_by_confidence_and_date(conn: sqlite3.Conne
     )
     assert {r.common_name for r in today_only} == {"Black-capped Chickadee", "House Finch"}
     chickadee_today = next(r for r in today_only if r.common_name == "Black-capped Chickadee")
-    assert chickadee_today.detection_count == 1  # yesterday's detection excluded
-    assert chickadee_today.avg_confidence == 0.90
+    # Two detections survive today (0.90 and 0.60, yesterday's 0.50 is
+    # excluded) — highest_confidence must reflect the higher of the
+    # two (0.90), not their average (0.75). This is the exact
+    # real-world discrepancy a user reported live: a table row showing
+    # a lower number than the species' just-arrived detection.
+    assert chickadee_today.detection_count == 2
+    assert chickadee_today.highest_confidence == 0.90
 
 
 def _backdate_last_verified(conn: sqlite3.Connection, species_id: int, days_ago: int) -> None:

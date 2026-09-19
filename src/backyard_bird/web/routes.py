@@ -134,7 +134,7 @@ def _species_json(row: SpeciesSummaryRow, approved_by_name: dict, best_recording
         "common_name": row.common_name,
         "scientific_name": row.scientific_name,
         "detection_count": row.detection_count,
-        "confidence": row.avg_confidence,
+        "confidence": row.highest_confidence,
         "first_detected_at_utc": row.first_detected_at_utc,
         "last_detected_at_utc": row.last_detected_at_utc,
         "duration_seen_seconds": duration_seen_seconds,

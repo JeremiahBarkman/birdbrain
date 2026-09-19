@@ -985,3 +985,76 @@ switch actually reconnects onto the new device with no error status
 and no backoff delay, and web-route tests for both endpoints including
 the config.yaml persistence path.
 
+### Spectrogram axes, dB key, and high-pass filtering (2026-09-19)
+
+User request, modeled on birdnet-go's spectrogram viewer: the recording
+modal gained frequency (kHz) and time (seconds) axes plus a dB color
+legend around the spectrogram, and a real high-pass filter — a Web
+Audio `BiquadFilterNode` actually filters what you hear, and the
+visible spectrogram is re-rendered server-side on demand
+(`?highpass=<hz>` on the existing `/media/audio/<slug>/spectrogram.png`
+route, `audio/spectrogram.py`'s new `render_spectrogram_bytes()`) so
+what you see matches what you hear. The filter selection is remembered
+per species (`best_recordings.highpass_hz`, migration 004), resetting
+only when a higher-confidence detection replaces that species' clip —
+same reset trigger `is_approved` already used.
+
+**Real bug caught by its own test:** the highpass implementation
+originally computed the brightness `reference` (the max magnitude used
+to normalize dB) *after* zeroing the filtered-out bins. Filtering out a
+clip's one loud frequency band left only quiet noise-floor residue
+behind, and normalizing against *that* residue's own max made it
+rescale to look just as bright as the original signal — a highpass
+cutoff above a test tone's frequency should darken the image, and
+instead brightened it. Fixed by computing `reference` from the
+unfiltered spectrum before any zeroing.
+
+Live "Listen Live" got the same axes/key, plus a high-pass filter
+inserted *upstream* of the analyser node in the Web Audio graph —
+unlike the static per-clip PNG, the live waterfall needs no server
+round trip to reflect a filter change, since it just reads from
+whatever the graph already carries. Added a 1x/2x/3x size control
+(scales the canvas's CSS height and rebuilds its pixel buffer at the
+new size). The whole live-spectrogram panel — chart, axes, key, and
+both new controls — now folds away entirely while "Listen Live" is
+inactive (previously only the canvas itself was hidden).
+
+### Safari couldn't play the live-monitor stream (2026-09-19)
+
+A real tester hit `NotSupportedError` in Safari the instant "Listen
+Live" called `.play()` — Chrome and Firefox were unaffected.
+`audio/wav_stream.py`'s streaming WAV header declares its RIFF/data
+chunk sizes as a placeholder (the real length isn't known upfront for
+an open-ended stream) — 0xFFFFFFFF, the max *unsigned* 32-bit value.
+Read as a *signed* 32-bit size, which is what Safari's media pipeline
+apparently does internally, that value is -1 — already invalid, and
+apparently enough for Safari to refuse the resource outright rather
+than tolerate it the way Chrome/Firefox do. Switched the placeholder
+to 0x7FFFFFFF (max signed 32-bit, unambiguous either way signedness is
+read) — the same value other streaming-WAV servers (Icecast/Shoutcast
+WAV relays) use for this exact cross-player reason. Added a test
+pinning the literal header bytes so this can't silently regress back
+to the unsigned-max value.
+
+### Species table showed average confidence, not highest (2026-09-19)
+
+Real bug, reported live by the user from a screenshot: "Most Recent
+Detection" showed a Cedar Waxwing at 81%, but that same species' row in
+the table below showed 76%. `list_species_summary`'s SQL was
+`AVG(d.confidence)` across every one of that species' surviving
+detections — for a species with thousands of detections, a single
+fresh high-confidence one barely moves the average, so the table
+number looked stale/wrong compared to what just happened. Changed to
+`MAX(d.confidence)`, renamed `SpeciesSummaryRow.avg_confidence` ->
+`highest_confidence` (matching the naming `daily_species_summary` and
+`slideshow.order: highest_confidence` already use elsewhere in this
+project), so the table now agrees with "most recent" and with
+`best_recordings.confidence` (which was already tracking the max, just
+for the audio clip rather than the displayed number).
+
+No test had ever caught this: every existing `list_species_summary`
+test happened to filter down to exactly one surviving detection per
+species, where `AVG` and `MAX` are indistinguishable by construction.
+Added a case with two surviving detections in one group specifically
+to make that distinction visible going forward.
+

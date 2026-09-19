@@ -259,7 +259,7 @@ class SpeciesSummaryRow:
     scientific_name: str
     common_name: str
     detection_count: int
-    avg_confidence: float
+    highest_confidence: float
     first_detected_at_utc: str
     last_detected_at_utc: str
 
@@ -271,10 +271,10 @@ def list_species_summary(
     min_confidence: float | None = None,
 ) -> list[SpeciesSummaryRow]:
     # Filters narrow which underlying detections feed the aggregation
-    # (count/avg/first/last), the same clause-building shape as
+    # (count/highest/first/last), the same clause-building shape as
     # list_detections above — so e.g. a species with zero detections
     # meeting the filter just doesn't appear, rather than showing a
-    # zero row, and count/avg/first-seen/last-seen all reflect only
+    # zero row, and count/highest/first-seen/last-seen all reflect only
     # the filtered detections rather than the species' full history.
     #
     # The rejected-detection exclusion is what makes reject_species_
@@ -300,7 +300,7 @@ def list_species_summary(
         f"""
         SELECT s.scientific_name, s.common_name,
                COUNT(*) AS detection_count,
-               AVG(d.confidence) AS avg_confidence,
+               MAX(d.confidence) AS highest_confidence,
                MIN(d.detected_at_utc) AS first_detected_at_utc,
                MAX(d.detected_at_utc) AS last_detected_at_utc
         FROM detections d
@@ -316,7 +316,7 @@ def list_species_summary(
             scientific_name=r["scientific_name"],
             common_name=r["common_name"],
             detection_count=r["detection_count"],
-            avg_confidence=r["avg_confidence"],
+            highest_confidence=r["highest_confidence"],
             first_detected_at_utc=r["first_detected_at_utc"],
             last_detected_at_utc=r["last_detected_at_utc"],
         )
