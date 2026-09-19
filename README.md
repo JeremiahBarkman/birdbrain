@@ -1,4 +1,15 @@
 ![Dashboard screenshot](dashboard-screenshot.png)
+
+Per-species recording detail (frequency/time axes, dB color key, a
+per-species-remembered high-pass filter):
+
+![Recording spectrogram screenshot](recording-spectrogram-screenshot.png)
+
+Real-time waterfall spectrogram while "Listen Live" plays (same axes/key,
+a high-pass filter, and a 1x/2x/3x size control):
+
+![Live spectrogram screenshot](live-spectrogram-screenshot.png)
+
 # Backyard Bird Discovery System
 
 Local-first pipeline: outdoor microphone → BirdNET-Analyzer → SQLite
