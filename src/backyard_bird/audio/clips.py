@@ -19,6 +19,13 @@ def species_clip_path(clips_root: Path, scientific_name: str) -> Path:
     return clips_root / species_slug(scientific_name) / "clip.wav"
 
 
+def species_spectrogram_path(clips_root: Path, scientific_name: str) -> Path:
+    """Same directory/lifecycle as species_clip_path above: one PNG per
+    species, plain-overwritten whenever the clip it depicts is
+    replaced (see spectrogram.py's generate_spectrogram)."""
+    return clips_root / species_slug(scientific_name) / "spectrogram.png"
+
+
 def extract_clip(
     source_wav: Path,
     start_seconds: float,

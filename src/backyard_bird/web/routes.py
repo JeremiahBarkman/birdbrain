@@ -9,6 +9,7 @@ correct without any connection-pooling machinery.
 """
 from __future__ import annotations
 
+import shutil
 import socket
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
@@ -16,6 +17,9 @@ from zoneinfo import ZoneInfo
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_from_directory, url_for
 
+from backyard_bird.audio.device_control import read_device_control, write_device_control
+from backyard_bird.audio.devices import list_input_devices
+from backyard_bird.audio.gain import GAIN_MAX, GAIN_MIN, read_gain_control, write_gain_control
 from backyard_bird.audio.levels import read_mic_status
 from backyard_bird.audio.wav_stream import streaming_wav_header
 from backyard_bird.database.connection import get_connection
@@ -69,6 +73,15 @@ def _image_url(scientific_name: str, approved_by_name: dict) -> str | None:
     return url_for("dashboard.species_image", slug=species_slug(scientific_name), filename=filename)
 
 
+def _spectrogram_url(slug: str) -> str | None:
+    path = Path(current_app.config["AUDIO_CLIPS_ROOT"]) / slug / "spectrogram.png"
+    if not path.exists():
+        # Generation is best-effort (worker.py) — a missing file means
+        # it failed or hasn't run yet, not that the recording is bad.
+        return None
+    return url_for("dashboard.species_spectrogram", slug=slug)
+
+
 def _recording_json(scientific_name: str, best_recordings_by_name: dict) -> dict | None:
     row = best_recordings_by_name.get(scientific_name)
     if row is None:
@@ -77,6 +90,7 @@ def _recording_json(scientific_name: str, best_recordings_by_name: dict) -> dict
     return {
         "url": url_for("dashboard.species_clip", slug=slug),
         "download_url": url_for("dashboard.species_clip", slug=slug, download="1"),
+        "spectrogram_url": _spectrogram_url(slug),
         "confidence": row["confidence"],
         "is_approved": bool(row["is_approved"]),
     }
@@ -140,6 +154,65 @@ def species_clip(slug: str):
         as_attachment=as_attachment,
         download_name=f"{slug}.wav" if as_attachment else None,
     )
+
+
+@bp.route("/media/audio/<slug>/spectrogram.png")
+def species_spectrogram(slug: str):
+    directory = Path(current_app.config["AUDIO_CLIPS_ROOT"]) / slug
+    return send_from_directory(directory, "spectrogram.png")
+
+
+@bp.route("/api/mic-devices")
+def api_mic_devices():
+    """Available input devices for the dashboard's device dropdown
+    (user request: "in case there is more than one mic"). Querying
+    device metadata doesn't require holding the microphone open, so
+    this is safe to call from the dashboard process even while
+    capture already has a device open (see audio/devices.py — the
+    ALSA one-process-per-device exclusivity only applies to actually
+    opening a stream, not to listing what's available).
+    """
+    try:
+        devices = list_input_devices()
+    except Exception as exc:  # noqa: BLE001 — device enumeration must never crash the dashboard
+        return jsonify({"error": f"Could not list audio devices: {exc}", "devices": [], "current": None})
+
+    current = read_device_control(
+        Path(current_app.config["DEVICE_CONTROL_PATH"]), default=current_app.config["DEVICE_DEFAULT"]
+    )
+    return jsonify(
+        {
+            "devices": [{"name": d.name, "channels": d.max_input_channels} for d in devices],
+            "current": current,
+        }
+    )
+
+
+@bp.route("/api/mic-device", methods=["POST"])
+def api_set_mic_device():
+    """Selects a new capture device (user request). Writes the live
+    control file capture_service.py polls — effective within about 5
+    seconds, without restarting capture, the same way a gain change
+    takes effect (see audio/device_control.py) — and, when the running
+    config's on-disk path is known, also persists the choice into
+    config.yaml's audio.device_name so a later full restart (e.g.
+    after a reboot) keeps using it rather than reverting.
+    """
+    from backyard_bird.setup_wizard import set_config_value
+
+    payload = request.get_json(silent=True) or {}
+    device_name = payload.get("device_name")
+    if not isinstance(device_name, str) or not device_name.strip():
+        return jsonify({"error": "device_name must be a non-empty string"}), 400
+
+    write_device_control(Path(current_app.config["DEVICE_CONTROL_PATH"]), device_name)
+
+    persisted = False
+    config_path = current_app.config.get("CONFIG_PATH")
+    if config_path is not None:
+        persisted = set_config_value(Path(config_path), "audio", "device_name", device_name)
+
+    return jsonify({"device_name": device_name, "persisted": persisted})
 
 
 @bp.route("/api/species/<path:scientific_name>/recording/star", methods=["POST"])
@@ -211,7 +284,10 @@ def delete_species(scientific_name: str):
 
     clip_path = result["clip_path"]
     if clip_path:
-        Path(clip_path).unlink(missing_ok=True)
+        # Removes the whole species directory, not just clip.wav — it
+        # also holds spectrogram.png (see audio/spectrogram.py), and
+        # "delete" is meant to leave nothing behind for this species.
+        shutil.rmtree(Path(clip_path).parent, ignore_errors=True)
 
     return jsonify({"scientific_name": scientific_name, "detections_deleted": result["detections_deleted"]})
 
@@ -242,6 +318,32 @@ def api_mic_status():
             "error_message": payload.get("error_message"),
         }
     )
+
+
+@bp.route("/api/mic-gain", methods=["GET", "POST"])
+def api_mic_gain():
+    """The software capture gain (user request: the mic defaults quite
+    low with no hardware control for it). GET reports the current
+    value; POST sets a new one. Both read/write
+    data/run/mic_gain.json, which capture_service.py polls roughly
+    once a second — so a change here reaches the already-running
+    capture process live, without a restart, the same way the live
+    level meter already flows data the other direction.
+    """
+    control_path = Path(current_app.config["GAIN_CONTROL_PATH"])
+    default_gain = current_app.config["GAIN_DEFAULT"]
+
+    if request.method == "POST":
+        payload = request.get_json(silent=True) or {}
+        try:
+            requested = float(payload.get("gain"))
+        except (TypeError, ValueError):
+            return jsonify({"error": "gain must be a number"}), 400
+        applied = write_gain_control(control_path, requested)
+    else:
+        applied = read_gain_control(control_path, default=default_gain)
+
+    return jsonify({"gain": applied, "min": GAIN_MIN, "max": GAIN_MAX})
 
 
 @bp.route("/api/monitor/live")

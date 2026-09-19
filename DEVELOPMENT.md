@@ -821,3 +821,167 @@ happy path (real audio, a real listener hearing real outdoor sound)
 still needs verification on the Pi, where a microphone is actually
 connected.
 
+### Per-species spectrogram thumbnail (2026-09-18)
+
+User-requested, inspired by the spectrogram view in
+[birdnet-go](https://github.com/tphakala/birdnet-go): a visual PNG
+spectrogram of each species' `best_recordings` clip, shown next to its
+audio player in the species table, with a thin playhead line that
+tracks playback.
+
+Deliberately not a live/streaming spectrogram (§32's "Live spectrogram
+dashboard" future-expansion item is a different, bigger feature — a
+real-time view of the mic feed) — this is a static image of the one
+clip this project already keeps per species, generated once whenever
+that clip is (re)written.
+
+**No new dependency, and no migration.** birdnet-go generates its
+spectrograms by shelling out to `ffmpeg`/`sox`; this project instead
+computes a short-time Fourier transform directly with `numpy` (already
+a direct dependency throughout `audio/`) and rasterizes it with
+`Pillow` (already direct in `images/`) — `audio/spectrogram.py`'s
+`generate_spectrogram()`. No schema change either: `species_
+spectrogram_path()` (`audio/clips.py`, alongside the existing
+`species_clip_path()`) derives a fixed `spectrogram.png` path from the
+species slug, the same convention `clip.wav` already uses, so nothing
+new needs storing in `best_recordings` — the dashboard route checks
+whether the file exists rather than reading a column.
+
+Colorized with a small hand-picked 5-stop "magma"-like gradient
+(`_COLORMAP_STOPS`, linearly interpolated per channel) rather than
+pulling in matplotlib for one colormap. Verified by generating a
+spectrogram of a synthetic 2 kHz test tone and confirming visually that
+the output is a single bright band at the expected frequency on an
+otherwise black image, not just "a PNG got written."
+
+Wired into `analysis/worker.py`'s `_maybe_update_best_recording()`
+*after* the clip extraction and `best_recordings` DB update, in its own
+try/except — a spectrogram is a presentation nicety, not part of the
+detection record, so (per CLAUDE.md's "image/frame failures must never
+stop detection" principle, extended here to this too) a bug in FFT/PNG
+generation must never prevent a real detection's clip from being
+recorded. Covered by a dedicated test that monkeypatches
+`generate_spectrogram` to raise and confirms the `best_recordings` row
+and clip file still land correctly.
+
+`web/routes.py` serves it at `GET /media/audio/<slug>/spectrogram.png`
+and adds `spectrogram_url` (`None` when the file doesn't exist yet —
+generation is best-effort, so a still-processing or previously-failed
+species must render as "no spectrogram," not a broken `<img>`) to the
+existing `recording` JSON. Species deletion (`DELETE
+/api/species/<name>`) now removes the whole per-species clip directory
+(`shutil.rmtree`) instead of unlinking just `clip.wav`, so a deleted
+species doesn't leave an orphaned spectrogram file behind.
+
+On the frontend, `dashboard.js`'s `recordingCellHtml()` renders the
+image above the existing `<audio>` control when a `spectrogram_url` is
+present, and a new delegated `timeupdate` listener (same capture-phase
+delegation pattern already used for `play`/`pause`, since none of
+these three events bubble) moves a `.spectrogram-playhead` div across
+it as the clip plays.
+
+New tests in `test_spectrogram.py` (PNG validity, directory creation,
+overwrite-not-append, silence, stereo downmix, a clip shorter than the
+FFT window, and rejecting non-16-bit-PCM input) plus additions to
+`test_worker.py` and `test_web.py`. Not yet verified against a real
+BirdNET-recorded bird call on either host — only against synthetic WAV
+fixtures (a pure tone and silence) and a hand-inspected PNG.
+
+### Adjustable gain and a live "Listen Live" spectrogram (2026-09-18)
+
+Two user requests, both about the same underlying complaint: the mic's
+input level runs quite low by default and there was no way to see or
+fix that beyond squinting at the level meter.
+
+**Gain** (`audio/gain.py`): a plain linear multiplier applied to every
+captured chunk in `capture_service.py`'s main loop, upstream of the
+level meter, the live-monitor relay, and the actual WAV segments
+written to `data/audio/incoming/` — so raising it fixes the level
+BirdNET itself analyzes, not just what the dashboard displays.
+Adjustable live from a slider next to the level meter without
+restarting capture: `GET`/`POST /api/mic-gain` read/write a small JSON
+control file (`data/run/mic_gain.json`) that capture polls about once
+a second, the same atomic-write pattern `audio/levels.py` already used
+in the other direction (capture -> dashboard) for the status file.
+`audio.gain` in config.yaml is only the startup value. Deliberately
+*not* persisted back into config.yaml on every slider move — unlike
+the device switch below, this is expected to be adjusted often while
+watching the meter, and the control file already survives ordinary
+restarts on its own.
+
+Samples are clipped (`np.clip`) rather than left to overflow: an
+early version multiplied and cast straight to int16, and boosting a
+near-full-scale sample wrapped around via two's-complement instead of
+clipping — sounds far worse. Covered in `test_gain.py`.
+
+**Live spectrogram**: a real-time waterfall view shown while "Listen
+Live" plays, drawn entirely client-side with the Web Audio API's
+`AnalyserNode` onto a `<canvas>` — no server-side encoding, no new
+load on the Pi. Reuses the same 5-stop magma-like color gradient
+`audio/spectrogram.py` uses for the static per-species PNGs
+(reimplemented in JS; there's no shared code between a Python PNG
+renderer and a browser canvas). One real gotcha: the `AudioContext`
+must be created synchronously inside the button's own click handler
+(`ensureLiveAudioGraph()`), not inside `play()`'s `.then()` — browsers
+refuse to let an `AudioContext` start outside an actual user-gesture
+callback, and a promise continuation no longer counts as one even
+though it originated from a click. Once `createMediaElementSource()`
+is called on the `<audio>` element, its default output is silently
+cut off unless the analyser is explicitly reconnected to
+`audioCtx.destination` too — easy to miss and the symptom (dead
+silence, no errors) doesn't point at the cause.
+
+Both verified live against the real running dashboard on the Pi: the
+gain slider visibly moved the level meter and the actual captured WAV
+amplitude (checked by hand against a freshly-written `processed/`
+segment), and the live spectrogram rendered and scrolled correctly in
+a real browser.
+
+### Mic device dropdown (2026-09-19)
+
+User request: "in case there is more than one mic" — the mic name next
+to the capturing indicator was plain text, requiring a hand-edit of
+`config.yaml`'s `audio.device_name` (plus a full capture restart) to
+switch. Now a `<select>` (`#mic-device-select`), populated once at
+load from `GET /api/mic-devices` (`audio/devices.py`'s existing
+`list_input_devices()` — querying device metadata doesn't require
+holding the mic open, so this is safe to call from the dashboard
+process even while capture already has a device open).
+
+Switching devices does **not** restart the capture process. It reuses
+`capture_service.py`'s existing periodic device-presence check
+(`_DEVICE_PRESENCE_CHECK_SECONDS`, originally built to notice an
+unplugged mic and trigger a reconnect): that check now also polls a
+small control file (`audio/device_control.py`, same pattern as gain's)
+and, if the dashboard has requested a different device, treats it
+exactly like the existing reconnect path — *except* as a clean
+`return` rather than a `raise`, so it skips the backoff wait and the
+"error" status a real disconnect gets, since a deliberate switch isn't
+a failure. `run()`'s outer loop, already written to reopen the stream
+after any `_capture_until_error` call ends, picks the new device name
+straight back up with no other changes needed — the whole feature
+turned out to be a few lines in an existing state machine, not a new
+one.
+
+Unlike gain, a device switch *is* persisted into config.yaml
+(`audio.device_name`, via `setup_wizard.set_config_value` — already
+used for exactly this field, from the `setup` wizard and CLI), because
+picking a mic is a discrete, deliberate, rarely-changed choice where
+reverting to a stale config value on the next reboot would be a real
+annoyance, unlike a gain value that's expected to be nudged often.
+`create_app()` gained an optional `config_path` parameter for this —
+optional so every existing test/caller that doesn't pass one keeps
+working exactly as before, just without config persistence (the live
+control-file switch still works either way).
+
+If the configured/selected device isn't currently one PortAudio can
+see (unplugged, or ALSA renumbered it after a reboot — see the Linux
+support notes above), the dropdown adds it as an extra "(not
+detected)" option rather than silently jumping the selection to
+whatever device happens to be first.
+
+Covered by `test_device_control.py`, capture-service tests proving a
+switch actually reconnects onto the new device with no error status
+and no backoff delay, and web-route tests for both endpoints including
+the config.yaml persistence path.
+

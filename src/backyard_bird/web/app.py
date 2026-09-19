@@ -1,12 +1,14 @@
 """Flask app factory for the local status dashboard (§22)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 from flask import Flask
 
 from backyard_bird.config import AppConfig
 
 
-def create_app(app_config: AppConfig) -> Flask:
+def create_app(app_config: AppConfig, config_path: Path | None = None) -> Flask:
     app = Flask(__name__)
     # Jinja2 caches compiled templates by default when debug=False (which
     # `dashboard run` always uses — no reason to run Flask's debugger on a
@@ -30,6 +32,14 @@ def create_app(app_config: AppConfig) -> Flask:
     app.config["LIVE_MONITOR_PORT"] = app_config.audio.live_monitor_port
     app.config["AUDIO_SAMPLE_RATE"] = app_config.audio.sample_rate
     app.config["AUDIO_CHANNELS"] = app_config.audio.channels
+    app.config["GAIN_CONTROL_PATH"] = data_directory / "run" / "mic_gain.json"
+    app.config["GAIN_DEFAULT"] = app_config.audio.gain
+    app.config["DEVICE_CONTROL_PATH"] = data_directory / "run" / "mic_device.json"
+    app.config["DEVICE_DEFAULT"] = app_config.audio.device_name
+    # Optional: without it (e.g. most existing tests), a device switch
+    # still takes effect live via DEVICE_CONTROL_PATH above, it just
+    # isn't persisted back into config.yaml for the next full restart.
+    app.config["CONFIG_PATH"] = config_path
 
     from backyard_bird.web.routes import bp
 

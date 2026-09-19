@@ -21,9 +21,10 @@ from pathlib import Path
 from backyard_bird.analysis.birdnet_adapter import analyze_file
 from backyard_bird.analysis.deduplicator import find_duplicate
 from backyard_bird.analysis.result_parser import ParsedDetection, parse_detection
-from backyard_bird.audio.clips import extract_clip, species_clip_path
+from backyard_bird.audio.clips import extract_clip, species_clip_path, species_spectrogram_path
 from backyard_bird.audio.retention import enforce_disk_space_floor, sweep_failed, sweep_processed
 from backyard_bird.audio.segmenter import parse_segment_filename
+from backyard_bird.audio.spectrogram import generate_spectrogram
 from backyard_bird.config import AudioConfig, BirdNETConfig, DetectionsConfig, LocationConfig
 from backyard_bird.database.repositories import (
     find_audio_segment_by_file_path,
@@ -156,6 +157,20 @@ def _maybe_update_best_recording(
         logger.error(
             "best_recording_update_failed",
             extra={"event": "best_recording_update_failed", "species_id": species_id, "error": str(exc)},
+            exc_info=True,
+        )
+        return
+
+    # Best-effort and separated from the block above: a spectrogram is
+    # a presentation nicety, not part of the detection record, so a
+    # failure here must not undo (or look like a failure of) the
+    # clip/DB update that already succeeded.
+    try:
+        generate_spectrogram(clip_path, species_spectrogram_path(dirs.best_clips, parsed.scientific_name))
+    except Exception as exc:  # noqa: BLE001 — see above
+        logger.error(
+            "spectrogram_generation_failed",
+            extra={"event": "spectrogram_generation_failed", "species_id": species_id, "error": str(exc)},
             exc_info=True,
         )
 

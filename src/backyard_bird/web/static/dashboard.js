@@ -119,13 +119,29 @@ function birdGuideUrl(commonName) {
   return `https://www.allaboutbirds.org/guide/${slug}/overview`;
 }
 
-function recordingCellHtml(recording, scientificName) {
+function recordingCellHtml(recording, scientificName, commonName) {
   if (!recording) return '<span class="no-recording">–</span>';
   const starTitle = recording.is_approved
     ? "Human-approved — click to un-star"
     : "Mark this as a good recording";
+  // A small clickable thumbnail, not the full-size spectrogram inline
+  // (too small at row height to read, and stacking the full image
+  // above the audio player made every row much taller than before) —
+  // click opens #recording-modal with a large version of both.
+  const spectrogramIcon = recording.spectrogram_url
+    ? `
+      <button
+        class="spectrogram-icon-btn"
+        type="button"
+        data-spectrogram-url="${recording.spectrogram_url}"
+        data-recording-url="${recording.url}"
+        data-title="${commonName} (${scientificName})"
+        title="View spectrogram and play recording"
+      ><img class="spectrogram-icon" src="${recording.spectrogram_url}" alt="Spectrogram of ${scientificName}'s call"></button>`
+    : "";
   return `
     <div class="recording-cell">
+      ${spectrogramIcon}
       <audio controls preload="none" src="${recording.url}"></audio>
       <div class="recording-actions">
         <button
@@ -183,13 +199,35 @@ function renderStats(data) {
   document.getElementById("last-updated").textContent = `Updated ${new Date().toLocaleTimeString()}`;
 }
 
+function speciesRowHtml(s) {
+  return `
+      <tr>
+        <td><div class="species-thumb">${thumbHtml(s.image_url, s.common_name)}</div></td>
+        <td class="col-species">
+          <a class="species-link" href="${birdGuideUrl(s.common_name)}" target="_blank" rel="noopener noreferrer">
+            <strong>${s.common_name}</strong>
+          </a>
+          <span class="scientific">${s.scientific_name}</span>
+        </td>
+        <td class="col-detections">${s.detection_count}</td>
+        <td class="col-confidence">${formatConfidence(s.confidence)}</td>
+        <td class="col-recording">${recordingCellHtml(s.recording, s.scientific_name, s.common_name)}</td>
+        <td class="col-first-seen">${formatLocalTime(s.first_detected_at_utc)}</td>
+        <td class="col-last-seen">${formatLocalTime(s.last_detected_at_utc)}</td>
+        <td class="col-seen-for">${formatDuration(s.duration_seen_seconds)}</td>
+        <td class="col-actions">${actionsCellHtml(s.scientific_name)}</td>
+      </tr>`;
+}
+
 function renderSpeciesTable() {
   // The whole tbody gets replaced below (innerHTML) — fine for a
   // static thumbnail, but replacing an <audio> element mid-playback
   // would silently cut off a human review listen. Skip this render
   // entirely while anything is playing; playingAudioElements' pause
   // handler re-triggers this once nothing is, so it's never more than
-  // one poll cycle stale.
+  // one poll cycle stale. "Show more" below deliberately does NOT go
+  // through this function, precisely so it isn't blocked by this guard
+  // just because some unrelated row happens to be playing.
   if (playingAudioElements.size > 0) return;
 
   const tbody = document.getElementById("species-table-body");
@@ -204,34 +242,26 @@ function renderSpeciesTable() {
   }
 
   const visible = currentSpecies.slice(0, visibleSpeciesCount);
-  tbody.innerHTML = visible
-    .map(
-      (s) => `
-      <tr>
-        <td><div class="species-thumb">${thumbHtml(s.image_url, s.common_name)}</div></td>
-        <td class="col-species">
-          <a class="species-link" href="${birdGuideUrl(s.common_name)}" target="_blank" rel="noopener noreferrer">
-            <strong>${s.common_name}</strong>
-          </a>
-          <span class="scientific">${s.scientific_name}</span>
-        </td>
-        <td class="col-detections">${s.detection_count}</td>
-        <td class="col-confidence">${formatConfidence(s.confidence)}</td>
-        <td class="col-recording">${recordingCellHtml(s.recording, s.scientific_name)}</td>
-        <td class="col-first-seen">${formatLocalTime(s.first_detected_at_utc)}</td>
-        <td class="col-last-seen">${formatLocalTime(s.last_detected_at_utc)}</td>
-        <td class="col-seen-for">${formatDuration(s.duration_seen_seconds)}</td>
-        <td class="col-actions">${actionsCellHtml(s.scientific_name)}</td>
-      </tr>`
-    )
-    .join("");
-
+  tbody.innerHTML = visible.map(speciesRowHtml).join("");
   showMoreBtn.hidden = visibleSpeciesCount >= currentSpecies.length;
 }
 
+// Appends only the newly revealed rows rather than calling
+// renderSpeciesTable() — a full re-render replaces every row's
+// innerHTML, which both fights the playing-audio guard above (a click
+// here would silently do nothing while any recording is playing) and,
+// even when it didn't, would tear down and recreate the audio element
+// that's currently playing. Appending leaves every already-rendered
+// row, playing or not, untouched.
 document.getElementById("species-show-more").addEventListener("click", () => {
+  const previousCount = visibleSpeciesCount;
   visibleSpeciesCount += SPECIES_PAGE_INCREMENT;
-  renderSpeciesTable();
+  const newlyVisible = currentSpecies.slice(previousCount, visibleSpeciesCount);
+  document.getElementById("species-table-body").insertAdjacentHTML(
+    "beforeend",
+    newlyVisible.map(speciesRowHtml).join("")
+  );
+  document.getElementById("species-show-more").hidden = visibleSpeciesCount >= currentSpecies.length;
 });
 
 async function poll() {
@@ -293,6 +323,59 @@ document.body.addEventListener(
   },
   true
 );
+
+// Spectrogram/recording modal: clicking a row's small spectrogram icon
+// opens a large version of that same image plus a full-size audio
+// player — the row thumbnail is too small to actually read a call's
+// detail at a glance, so it's just an entry point into this bigger
+// view rather than trying to be readable itself.
+const recordingModal = document.getElementById("recording-modal");
+const recordingModalAudio = document.getElementById("recording-modal-audio");
+const recordingModalPlayhead = document.getElementById("recording-modal-playhead");
+
+function openRecordingModal(spectrogramUrl, recordingUrl, title) {
+  document.getElementById("recording-modal-title").textContent = title;
+  document.getElementById("recording-modal-spectrogram").src = spectrogramUrl;
+  recordingModalPlayhead.style.left = "0%";
+  recordingModalAudio.src = recordingUrl;
+  recordingModal.hidden = false;
+}
+
+function closeRecordingModal() {
+  recordingModal.hidden = true;
+  // Actually stops playback/downloading, not just hides the dialog —
+  // same reasoning as stopLiveMonitor()'s pause+clear src+load below.
+  recordingModalAudio.pause();
+  recordingModalAudio.removeAttribute("src");
+  recordingModalAudio.load();
+  document.getElementById("recording-modal-spectrogram").src = "";
+}
+
+document.body.addEventListener("click", (event) => {
+  const iconBtn = event.target.closest(".spectrogram-icon-btn");
+  if (!iconBtn) return;
+  openRecordingModal(iconBtn.dataset.spectrogramUrl, iconBtn.dataset.recordingUrl, iconBtn.dataset.title);
+});
+
+recordingModal.addEventListener("click", (event) => {
+  // Clicking the image, the audio player, or the title stays open —
+  // only the dark backdrop around them closes it.
+  if (event.target.closest(".recording-modal-content")) return;
+  closeRecordingModal();
+});
+
+document.getElementById("recording-modal-close").addEventListener("click", closeRecordingModal);
+
+// A single persistent element (unlike the per-row <audio>s, this one
+// is never replaced by a table re-render), so a direct listener is
+// simpler and just as correct as the capture-phase delegation the
+// per-row play/pause tracking above needs.
+recordingModalAudio.addEventListener("timeupdate", () => {
+  const percent = recordingModalAudio.duration
+    ? (recordingModalAudio.currentTime / recordingModalAudio.duration) * 100
+    : 0;
+  recordingModalPlayhead.style.left = `${percent}%`;
+});
 
 // Star (human-approval) toggle: optimistic UI update, then reconcile
 // with the server. Delegated for the same reason as the image click
@@ -381,7 +464,9 @@ document.getElementById("image-modal").addEventListener("click", (event) => {
 document.getElementById("image-modal-close").addEventListener("click", closeImageModal);
 
 document.addEventListener("keydown", (event) => {
-  if (event.key === "Escape") closeImageModal();
+  if (event.key !== "Escape") return;
+  closeImageModal();
+  closeRecordingModal();
 });
 
 // Live mic status + level meter (user request, 2026-09-14). Polled
@@ -390,7 +475,6 @@ document.addEventListener("keydown", (event) => {
 function renderMicStatus(data) {
   const dot = document.getElementById("mic-status-dot");
   const text = document.getElementById("mic-status-text");
-  const device = document.getElementById("mic-status-device");
   const fill = document.getElementById("level-meter-fill");
 
   dot.classList.remove("is-capturing", "is-error");
@@ -405,7 +489,10 @@ function renderMicStatus(data) {
   } else {
     text.textContent = "No live data";
   }
-  device.textContent = data.device_name || "";
+  // Device name is now the mic-device-select dropdown below, not text
+  // here — see fetchMicDevices()/micDeviceSelect. It's populated once
+  // at load rather than re-synced from every 1s status poll, so it
+  // doesn't fight a user actively choosing a different device.
 
   const percent = data.peak_percent ?? 0;
   fill.style.width = `${percent}%`;
@@ -434,6 +521,105 @@ const liveMonitorBtn = document.getElementById("live-monitor-btn");
 const liveMonitorAudio = document.getElementById("live-monitor-audio");
 let liveMonitorActive = false;
 
+// Live spectrogram (user request): a real-time waterfall view of the
+// mic feed while "Listen Live" plays, drawn with the Web Audio API's
+// AnalyserNode straight onto a <canvas> — entirely client-side, no
+// server round trip, reusing the same <audio> element Listen Live
+// already streams into. The AudioContext/analyser graph is built once
+// and kept alive across stop/start cycles (rather than torn down and
+// rebuilt) because a media element can only ever be passed to
+// createMediaElementSource() once in its lifetime.
+const liveSpectrogramCanvas = document.getElementById("live-spectrogram-canvas");
+let liveAudioCtx = null;
+let liveAnalyser = null;
+let liveSpectrogramRAF = null;
+
+// The same 5-stop magma-like gradient audio/spectrogram.py uses for
+// the per-species PNGs, reimplemented here in JS so the live view and
+// the static ones read as the same visual language.
+const LIVE_SPECTROGRAM_COLOR_STOPS = [
+  [0.0, 0, 0, 4],
+  [0.25, 81, 18, 124],
+  [0.5, 183, 55, 121],
+  [0.75, 252, 137, 97],
+  [1.0, 252, 253, 191],
+];
+
+function liveSpectrogramColor(value) {
+  for (let i = 1; i < LIVE_SPECTROGRAM_COLOR_STOPS.length; i++) {
+    const [p0, r0, g0, b0] = LIVE_SPECTROGRAM_COLOR_STOPS[i - 1];
+    const [p1, r1, g1, b1] = LIVE_SPECTROGRAM_COLOR_STOPS[i];
+    if (value <= p1 || i === LIVE_SPECTROGRAM_COLOR_STOPS.length - 1) {
+      const t = p1 === p0 ? 0 : (value - p0) / (p1 - p0);
+      return `rgb(${Math.round(r0 + (r1 - r0) * t)}, ${Math.round(g0 + (g1 - g0) * t)}, ${Math.round(b0 + (b1 - b0) * t)})`;
+    }
+  }
+  return "rgb(0, 0, 4)";
+}
+
+// Must be called synchronously from within the button's click handler
+// (not from inside play()'s .then()) — browsers only allow creating an
+// AudioContext during an actual user-gesture callback.
+function ensureLiveAudioGraph() {
+  if (!liveAnalyser) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    liveAudioCtx = new AudioContextClass();
+    const source = liveAudioCtx.createMediaElementSource(liveMonitorAudio);
+    liveAnalyser = liveAudioCtx.createAnalyser();
+    liveAnalyser.fftSize = 2048;
+    liveAnalyser.minDecibels = -90;
+    liveAnalyser.maxDecibels = -10;
+    source.connect(liveAnalyser);
+    // Required for the element to still be audible — once
+    // createMediaElementSource() is called, its normal output no
+    // longer reaches the speakers on its own.
+    liveAnalyser.connect(liveAudioCtx.destination);
+  }
+  if (liveAudioCtx.state === "suspended") liveAudioCtx.resume();
+}
+
+function startLiveSpectrogram() {
+  if (!liveAnalyser) return; // ensureLiveAudioGraph() wasn't called, or creating it failed
+  liveSpectrogramCanvas.hidden = false;
+
+  const rect = liveSpectrogramCanvas.getBoundingClientRect();
+  const dpr = window.devicePixelRatio || 1;
+  liveSpectrogramCanvas.width = Math.max(1, Math.round(rect.width * dpr));
+  liveSpectrogramCanvas.height = Math.max(1, Math.round(rect.height * dpr));
+
+  const ctx = liveSpectrogramCanvas.getContext("2d");
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, liveSpectrogramCanvas.width, liveSpectrogramCanvas.height);
+
+  const freqData = new Uint8Array(liveAnalyser.frequencyBinCount);
+
+  function draw() {
+    liveAnalyser.getByteFrequencyData(freqData);
+    const width = liveSpectrogramCanvas.width;
+    const height = liveSpectrogramCanvas.height;
+    // Scrolls the whole image one column left, then paints one fresh
+    // column of bins along the right edge — a waterfall, one column
+    // per animation frame, versus the static PNGs rendering every
+    // column of a whole clip at once.
+    ctx.drawImage(liveSpectrogramCanvas, -1, 0);
+    for (let y = 0; y < height; y++) {
+      // Low frequencies at the bottom, same convention the static
+      // per-species spectrograms use.
+      const binIndex = Math.floor(((height - 1 - y) / height) * freqData.length);
+      ctx.fillStyle = liveSpectrogramColor(freqData[binIndex] / 255);
+      ctx.fillRect(width - 1, y, 1, 1);
+    }
+    liveSpectrogramRAF = requestAnimationFrame(draw);
+  }
+  draw();
+}
+
+function stopLiveSpectrogram() {
+  if (liveSpectrogramRAF) cancelAnimationFrame(liveSpectrogramRAF);
+  liveSpectrogramRAF = null;
+  liveSpectrogramCanvas.hidden = true;
+}
+
 function stopLiveMonitor() {
   liveMonitorAudio.pause();
   liveMonitorAudio.removeAttribute("src");
@@ -441,6 +627,7 @@ function stopLiveMonitor() {
   liveMonitorActive = false;
   liveMonitorBtn.textContent = "🔊 Listen Live";
   liveMonitorBtn.classList.remove("active");
+  stopLiveSpectrogram();
 }
 
 liveMonitorBtn.addEventListener("click", () => {
@@ -448,12 +635,16 @@ liveMonitorBtn.addEventListener("click", () => {
     stopLiveMonitor();
     return;
   }
+  ensureLiveAudioGraph();
   liveMonitorAudio.src = "/api/monitor/live";
-  liveMonitorAudio.play().catch((err) => {
-    console.error("live monitor playback failed:", err);
-    alert("Could not start the live audio monitor — see the browser console for details.");
-    stopLiveMonitor();
-  });
+  liveMonitorAudio
+    .play()
+    .then(() => startLiveSpectrogram())
+    .catch((err) => {
+      console.error("live monitor playback failed:", err);
+      alert("Could not start the live audio monitor — see the browser console for details.");
+      stopLiveMonitor();
+    });
   liveMonitorActive = true;
   liveMonitorBtn.textContent = "⏹ Stop Listening";
   liveMonitorBtn.classList.add("active");
@@ -465,7 +656,102 @@ liveMonitorAudio.addEventListener("error", () => {
   stopLiveMonitor();
 });
 
+// Software gain control (user request: the mic runs quite low by
+// default, with no hardware knob for it). GET/POST /api/mic-gain — see
+// audio/gain.py for how a change here reaches the already-running
+// capture process live, without a restart.
+const gainSlider = document.getElementById("gain-slider");
+const gainValueEl = document.getElementById("gain-value");
+
+function renderGainValue(gain) {
+  gainValueEl.textContent = `${Number(gain).toFixed(2)}×`;
+}
+
+async function fetchGain() {
+  try {
+    const response = await fetch("/api/mic-gain");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    gainSlider.min = data.min;
+    gainSlider.max = data.max;
+    gainSlider.value = data.gain;
+    renderGainValue(data.gain);
+  } catch (err) {
+    console.error("gain fetch failed:", err);
+  }
+}
+
+gainSlider.addEventListener("input", () => renderGainValue(gainSlider.value));
+
+// "change" (fires on release/blur), not "input" (fires continuously
+// while dragging) — sends one request per adjustment instead of
+// flooding the server while the slider is being dragged.
+gainSlider.addEventListener("change", async () => {
+  try {
+    const response = await fetch("/api/mic-gain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gain: Number(gainSlider.value) }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+    gainSlider.value = data.gain; // reflect any server-side clamping
+    renderGainValue(data.gain);
+  } catch (err) {
+    console.error("gain update failed:", err);
+  }
+});
+
+// Mic device selection (user request: "in case there is more than one
+// mic"). Populated once at load from /api/mic-devices, not re-synced
+// on every mic-status poll — that would fight a user actively working
+// the dropdown. Selecting a different device POSTs the choice, which
+// reaches the already-running capture process within about 5 seconds
+// (audio/device_control.py's poll interval), no restart needed, and
+// is also persisted into config.yaml so a later full restart keeps
+// using it.
+const micDeviceSelect = document.getElementById("mic-device-select");
+
+async function fetchMicDevices() {
+  try {
+    const response = await fetch("/api/mic-devices");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    const data = await response.json();
+
+    let optionsHtml = data.devices.map((d) => `<option value="${d.name}">${d.name}</option>`).join("");
+    // The configured/selected device might not be one PortAudio
+    // currently sees (unplugged, renamed after a reboot) — list it
+    // anyway rather than letting the dropdown silently jump to
+    // whatever the first available device happens to be.
+    if (data.current && !data.devices.some((d) => d.name === data.current)) {
+      optionsHtml = `<option value="${data.current}">${data.current} (not detected)</option>${optionsHtml}`;
+    }
+    micDeviceSelect.innerHTML = optionsHtml || '<option value="">No input devices found</option>';
+    micDeviceSelect.value = data.current || "";
+  } catch (err) {
+    console.error("mic device list fetch failed:", err);
+    micDeviceSelect.innerHTML = '<option value="">Could not load devices</option>';
+  }
+}
+
+micDeviceSelect.addEventListener("change", async () => {
+  const deviceName = micDeviceSelect.value;
+  try {
+    const response = await fetch("/api/mic-device", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ device_name: deviceName }),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (err) {
+    console.error("mic device switch failed:", err);
+    alert("Could not switch microphone — see the browser console for details.");
+  }
+});
+
 poll();
 setInterval(poll, POLL_INTERVAL_MS);
 pollMicStatus();
 setInterval(pollMicStatus, MIC_STATUS_POLL_INTERVAL_MS);
+fetchGain();
+fetchMicDevices();

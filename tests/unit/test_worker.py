@@ -25,6 +25,7 @@ from backyard_bird.analysis.worker import (
     recover_stuck_segments,
 )
 from backyard_bird.audio import retention
+from backyard_bird.audio.clips import species_spectrogram_path
 from backyard_bird.config import AudioConfig, BirdNETConfig, DetectionsConfig, LocationConfig
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
@@ -99,6 +100,7 @@ def test_process_one_file_writes_detections_and_files_segment(
     assert best["confidence"] == 0.81
     assert best["is_approved"] == 0
     assert Path(best["clip_path"]).exists()
+    assert species_spectrogram_path(dirs.best_clips, "Poecile atricapillus").exists()
 
 
 def test_process_one_file_routes_analysis_failure_to_failed_dir(
@@ -221,6 +223,27 @@ def test_higher_confidence_detection_replaces_best_recording(
     assert best["confidence"] == 0.90
     # Same fixed per-species path, overwritten in place — not a second file.
     assert Path(best["clip_path"]) == first_clip
+
+
+def test_spectrogram_failure_does_not_block_best_recording_update(
+    conn: sqlite3.Connection, dirs: QueueDirs, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Spectrogram generation is presentation-only (see worker.py's
+    # _maybe_update_best_recording docstring/comment) — a bug in it
+    # must not stop the clip/DB update that already succeeded, the
+    # same way image/frame failures elsewhere never block detection.
+    def _boom(*args: object, **kwargs: object) -> None:
+        raise RuntimeError("spectrogram exploded")
+
+    monkeypatch.setattr(worker_module, "generate_spectrogram", _boom)
+    _process_with_detection(
+        conn, dirs, monkeypatch, dirs.incoming / "2026-08-01T06-00-00_mic-01_000001.wav", 0.60, DetectionsConfig()
+    )
+
+    best = get_best_recordings_by_scientific_name(conn)["Poecile atricapillus"]
+    assert best["confidence"] == 0.60
+    assert Path(best["clip_path"]).exists()
+    assert not species_spectrogram_path(dirs.best_clips, "Poecile atricapillus").exists()
 
 
 def test_lower_confidence_detection_does_not_replace_best_recording(

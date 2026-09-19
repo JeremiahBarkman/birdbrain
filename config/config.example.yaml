@@ -45,6 +45,14 @@ audio:
   # bigger exposure than aggregate detection counts.
   enable_live_monitor: true
   live_monitor_port: 8766
+  # Software gain: a linear multiplier applied to every captured
+  # sample (1.0 = unchanged, 2.0 = twice as loud) to compensate for a
+  # mic whose input level runs low by default, with no hardware gain
+  # control of its own. This is only the startup value — the dashboard
+  # can adjust it live afterward (data/run/mic_gain.json), without
+  # restarting capture. Range 0.25-8.0; values pushed too high will
+  # clip/distort rather than help.
+  gain: 1.0
 
 birdnet:
   database_minimum_confidence: 0.60

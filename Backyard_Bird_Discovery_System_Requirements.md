@@ -1346,7 +1346,7 @@ http://127.0.0.1:8765
 
 The dashboard should display:
 
-- Microphone status — **done, 2026-09-14**, plus two additions beyond this list: a live input-level meter and a "listen live" button streaming real outdoor audio to the browser (both user-requested; see README's dated implementation note for the live-audio relay architecture this needed — the dashboard can't open the microphone itself, since ALSA only allows the capture process to hold the device, confirmed live on the Pi, §31.1)
+- Microphone status — **done, 2026-09-14**, plus two additions beyond this list: a live input-level meter and a "listen live" button streaming real outdoor audio to the browser (both user-requested; see README's dated implementation note for the live-audio relay architecture this needed — the dashboard can't open the microphone itself, since ALSA only allows the capture process to hold the device, confirmed live on the Pi, §31.1). **Extended, 2026-09-18** (both user-requested; see DEVELOPMENT.md's dated implementation note): a gain slider next to the level meter, adjustable live without restarting capture (the mic's default input level runs quite low, with no hardware control for it — `audio/gain.py`); and a real-time client-side spectrogram (Web Audio API + `<canvas>`, no server round trip) shown while "Listen Live" is playing — a partial, differently-scoped fulfillment of §32's "Live spectrogram dashboard" item from what the 2026-09-18 per-species-clip addition above already covers. **Extended again, 2026-09-19** (user-requested, "in case there is more than one mic"; see DEVELOPMENT.md's dated implementation note): the device name is now a dropdown (`GET`/`POST /api/mic-devices`/`/api/mic-device`) listing every input device PortAudio can see, switchable live without restarting capture (`audio/device_control.py`) and persisted into `config.yaml`.
 - Current capture state — covered by the same status above (capturing/stopped/error)
 - Last completed segment
 - Analysis queue depth
@@ -1978,7 +1978,13 @@ Recommended Version 1 behavior:
 
 Potential later capabilities:
 
-- Live spectrogram dashboard
+- Live spectrogram dashboard — **done, 2026-09-18**: the species table
+  shows a static PNG spectrogram of each species' `best_recordings`
+  clip, and the dashboard's "Listen Live" button now also shows a
+  real-time waterfall spectrogram of the ongoing microphone feed while
+  it plays (client-side, Web Audio API + `<canvas>`, no server-side
+  encoding involved) — see DEVELOPMENT.md's dated implementation
+  notes for both.
 - Selected-species notifications
 - Rare-bird alerts
 - Seasonal slideshows

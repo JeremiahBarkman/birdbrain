@@ -16,13 +16,21 @@
     <div class="mic-status-row">
       <span class="mic-status-dot" id="mic-status-dot"></span>
       <span id="mic-status-text">Checking microphone…</span>
-      <span class="mic-status-device" id="mic-status-device"></span>
+      <select class="mic-device-select" id="mic-device-select" title="Change microphone">
+        <option value="">Loading devices…</option>
+      </select>
       <button id="live-monitor-btn" class="filter-btn mic-status-listen" type="button">🔊 Listen Live</button>
     </div>
     <div class="level-meter" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100">
       <div class="level-meter-fill" id="level-meter-fill"></div>
     </div>
+    <div class="gain-control-row">
+      <label for="gain-slider">Gain</label>
+      <input type="range" id="gain-slider" min="0.25" max="8" step="0.05" value="1">
+      <span id="gain-value">1.0×</span>
+    </div>
     <audio id="live-monitor-audio" hidden></audio>
+    <canvas id="live-spectrogram-canvas" class="live-spectrogram" hidden></canvas>
   </section>
 
   <section class="summary-grid">
@@ -98,6 +106,18 @@
   <div class="image-modal" id="image-modal" hidden>
     <button class="image-modal-close" id="image-modal-close" type="button" aria-label="Close">&times;</button>
     <img id="image-modal-img" src="" alt="">
+  </div>
+
+  <div class="image-modal recording-modal" id="recording-modal" hidden>
+    <button class="image-modal-close" id="recording-modal-close" type="button" aria-label="Close">&times;</button>
+    <div class="recording-modal-content">
+      <div class="recording-modal-title" id="recording-modal-title"></div>
+      <div class="spectrogram-wrap large">
+        <img class="spectrogram" id="recording-modal-spectrogram" src="" alt="Spectrogram">
+        <div class="spectrogram-playhead" id="recording-modal-playhead"></div>
+      </div>
+      <audio id="recording-modal-audio" controls preload="none" src=""></audio>
+    </div>
   </div>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}"></script>

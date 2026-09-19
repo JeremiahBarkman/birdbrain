@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from backyard_bird.audio.clips import species_clip_path
+from backyard_bird.audio.clips import species_clip_path, species_spectrogram_path
 from backyard_bird.config import AppConfig, AudioConfig, LocationConfig, SystemConfig
 from backyard_bird.database.connection import get_connection
 from backyard_bird.database.migrations import apply_migrations
@@ -106,7 +106,7 @@ def test_index_page_includes_mic_status_markup(client) -> None:
     response = client.get("/")
     assert b'id="mic-status-dot"' in response.data
     assert b'id="mic-status-text"' in response.data
-    assert b'id="mic-status-device"' in response.data
+    assert b'id="mic-device-select"' in response.data
     assert b'id="level-meter-fill"' in response.data
     assert b'id="live-monitor-btn"' in response.data
     assert b'id="live-monitor-audio"' in response.data
@@ -243,6 +243,29 @@ def test_api_stats_includes_recording_info(client_with_recording) -> None:
     assert recording["download_url"] == "/media/audio/poecile-atricapillus/clip.wav?download=1"
     assert recording["confidence"] == 0.81
     assert recording["is_approved"] is False
+    # No spectrogram.png written by this fixture — generation is
+    # best-effort (worker.py), so a missing file must read as "no
+    # spectrogram yet," not a broken image link.
+    assert recording["spectrogram_url"] is None
+
+
+def test_api_stats_includes_spectrogram_url_when_file_exists(client_with_recording, tmp_path: Path) -> None:
+    spectrogram_path = species_spectrogram_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
+    spectrogram_path.write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes for testing")
+
+    data = client_with_recording.get("/api/stats").get_json()
+
+    assert data["species"][0]["recording"]["spectrogram_url"] == "/media/audio/poecile-atricapillus/spectrogram.png"
+
+
+def test_species_spectrogram_is_served(client_with_recording, tmp_path: Path) -> None:
+    spectrogram_path = species_spectrogram_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
+    spectrogram_path.write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes for testing")
+
+    response = client_with_recording.get("/media/audio/poecile-atricapillus/spectrogram.png")
+
+    assert response.status_code == 200
+    assert response.data == b"\x89PNG\r\n\x1a\n fake png bytes for testing"
 
 
 def test_species_clip_is_served_for_playback(client_with_recording) -> None:
@@ -328,12 +351,15 @@ def test_reject_species_does_not_delete_anything(client, tmp_path: Path) -> None
 def test_delete_species_removes_detections_and_clip_file(client_with_recording, tmp_path: Path) -> None:
     clip_path = species_clip_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
     assert clip_path.exists()
+    spectrogram_path = species_spectrogram_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
+    spectrogram_path.write_bytes(b"\x89PNG\r\n\x1a\n fake png bytes for testing")
 
     response = client_with_recording.delete(f"/api/species/{SCIENTIFIC}")
     assert response.status_code == 200
     assert response.get_json() == {"scientific_name": SCIENTIFIC, "detections_deleted": 1}
 
     assert not clip_path.exists()  # the audio file itself was removed, not just the DB row
+    assert not spectrogram_path.exists()  # the whole species clip directory is removed
 
     conn = get_connection(tmp_path / "database" / "birds.sqlite3")
     try:
@@ -393,6 +419,125 @@ def test_mic_status_reports_real_capture_data(tmp_path: Path) -> None:
     assert data["device_name"] == "TONOR G11 USB microphone"
     assert data["peak_percent"] == 42.5
     assert data["peak_dbfs"] == -7.4
+
+
+# -- gain (user request: mic input runs quiet by default) --------------------
+
+
+def test_get_mic_gain_defaults_to_configured_value_when_no_control_file(client) -> None:
+    response = client.get("/api/mic-gain")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["gain"] == 1.0  # AudioConfig's own default, from _app_config
+    assert data["min"] > 0
+    assert data["max"] > data["min"]
+
+
+def test_post_mic_gain_persists_and_is_read_back(client) -> None:
+    response = client.post("/api/mic-gain", json={"gain": 2.5})
+    assert response.status_code == 200
+    assert response.get_json()["gain"] == 2.5
+
+    response = client.get("/api/mic-gain")
+    assert response.get_json()["gain"] == 2.5
+
+
+def test_post_mic_gain_clamps_out_of_range_values(client) -> None:
+    response = client.post("/api/mic-gain", json={"gain": 999.0})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["gain"] == data["max"]
+
+
+def test_post_mic_gain_rejects_non_numeric_value(client) -> None:
+    response = client.post("/api/mic-gain", json={"gain": "loud"})
+    assert response.status_code == 400
+
+
+# -- mic devices (user request: "in case there is more than one mic") -------
+
+
+def test_get_mic_devices_lists_available_devices(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    from backyard_bird.audio.devices import AudioDevice
+
+    fake_devices = [
+        AudioDevice(index=0, name="Mic A", max_input_channels=1, default_samplerate=48000.0, host_api="ALSA"),
+        AudioDevice(index=1, name="Mic B", max_input_channels=2, default_samplerate=44100.0, host_api="ALSA"),
+    ]
+    monkeypatch.setattr("backyard_bird.web.routes.list_input_devices", lambda: fake_devices)
+
+    response = client.get("/api/mic-devices")
+    assert response.status_code == 200
+    data = response.get_json()
+    assert [d["name"] for d in data["devices"]] == ["Mic A", "Mic B"]
+    assert data["current"] == "Fake Mic"  # AudioConfig's own default from _app_config, no control file yet
+
+
+def test_get_mic_devices_reports_control_file_selection(
+    client, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backyard_bird.audio.device_control import write_device_control
+    from backyard_bird.audio.devices import AudioDevice
+
+    monkeypatch.setattr(
+        "backyard_bird.web.routes.list_input_devices",
+        lambda: [AudioDevice(index=0, name="Mic A", max_input_channels=1, default_samplerate=48000.0, host_api="ALSA")],
+    )
+    write_device_control(tmp_path / "run" / "mic_device.json", "Mic A")
+
+    response = client.get("/api/mic-devices")
+    assert response.get_json()["current"] == "Mic A"
+
+
+def test_get_mic_devices_handles_enumeration_failure(client, monkeypatch: pytest.MonkeyPatch) -> None:
+    def _boom():
+        raise RuntimeError("PortAudio not available")
+
+    monkeypatch.setattr("backyard_bird.web.routes.list_input_devices", _boom)
+
+    response = client.get("/api/mic-devices")
+    assert response.status_code == 200  # a listing failure must never 500 the whole dashboard
+    data = response.get_json()
+    assert data["devices"] == []
+    assert "error" in data
+
+
+def test_post_mic_device_writes_control_file_without_config_path(client, tmp_path: Path) -> None:
+    from backyard_bird.audio.device_control import read_device_control
+
+    response = client.post("/api/mic-device", json={"device_name": "Mic B"})
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["device_name"] == "Mic B"
+    assert data["persisted"] is False  # the `client` fixture's app has no CONFIG_PATH
+
+    assert read_device_control(tmp_path / "run" / "mic_device.json", default="") == "Mic B"
+
+
+def test_post_mic_device_persists_to_config_yaml_when_config_path_known(tmp_path: Path) -> None:
+    import yaml
+
+    config_path = tmp_path / "config.yaml"
+    config_path.write_text("audio:\n  device_name: Fake Mic\n  microphone_id: mic-01\n")
+    _seed_detection_with_image(tmp_path, with_image=False)
+    app = create_app(_app_config(tmp_path), config_path=config_path)
+    app.testing = True
+    with app.test_client() as c:
+        response = c.post("/api/mic-device", json={"device_name": "Mic B"})
+
+    assert response.status_code == 200
+    assert response.get_json()["persisted"] is True
+    assert yaml.safe_load(config_path.read_text())["audio"]["device_name"] == "Mic B"
+
+
+def test_post_mic_device_rejects_empty_name(client) -> None:
+    response = client.post("/api/mic-device", json={"device_name": ""})
+    assert response.status_code == 400
+
+
+def test_post_mic_device_rejects_missing_name(client) -> None:
+    response = client.post("/api/mic-device", json={})
+    assert response.status_code == 400
 
 
 # -- live audio monitor (dashboard "listen live" button) --------------------

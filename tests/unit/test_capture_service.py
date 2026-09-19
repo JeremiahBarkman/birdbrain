@@ -83,6 +83,177 @@ def test_capture_run_writes_expected_segments(
     assert not list(incoming_dir.glob("*.partial"))  # nothing left mid-write
 
 
+# -- gain (user request: mic input runs quiet by default) -------------------
+
+
+def _read_wav_samples(path: Path) -> np.ndarray:
+    import wave
+
+    with wave.open(str(path), "rb") as wav_file:
+        return np.frombuffer(wav_file.readframes(wav_file.getnframes()), dtype=np.int16)
+
+
+def test_capture_applies_configured_gain_to_written_segments(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_device = SimpleNamespace(index=0, name="Fake Mic")
+    monkeypatch.setattr(capture_service_module, "find_input_device", lambda name: fake_device)
+
+    original = np.full((100, 1), 1000, dtype=np.int16)
+    monkeypatch.setattr(
+        capture_service_module.sd, "InputStream", lambda **kwargs: _FakeInputStream([original], **kwargs)
+    )
+
+    incoming_dir = tmp_path / "incoming"
+    service = CaptureService(_audio_config(gain=2.5), incoming_dir)
+    service.run(max_segments=1)
+
+    wav_files = sorted(incoming_dir.glob("*.wav"))
+    assert len(wav_files) == 1
+    written_samples = _read_wav_samples(wav_files[0])
+    # The whole segment's samples are boosted 2.5x, not just some of
+    # them — gain is applied once, upstream of the segmenter.
+    assert all(sample == 2500 for sample in written_samples)
+
+
+def test_capture_gain_control_file_overrides_config_default(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backyard_bird.audio.gain import write_gain_control
+
+    fake_device = SimpleNamespace(index=0, name="Fake Mic")
+    monkeypatch.setattr(capture_service_module, "find_input_device", lambda name: fake_device)
+
+    original = np.full((100, 1), 1000, dtype=np.int16)
+    monkeypatch.setattr(
+        capture_service_module.sd, "InputStream", lambda **kwargs: _FakeInputStream([original], **kwargs)
+    )
+
+    gain_control_path = tmp_path / "run" / "mic_gain.json"
+    write_gain_control(gain_control_path, 4.0)  # dashboard already set a live value before capture starts
+
+    incoming_dir = tmp_path / "incoming"
+    service = CaptureService(_audio_config(gain=1.0), incoming_dir, gain_control_path=gain_control_path)
+    service.run(max_segments=1)
+
+    wav_files = sorted(incoming_dir.glob("*.wav"))
+    written_samples = _read_wav_samples(wav_files[0])
+    assert all(sample == 4000 for sample in written_samples)
+
+
+def test_capture_gain_clips_rather_than_wrapping_around(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    fake_device = SimpleNamespace(index=0, name="Fake Mic")
+    monkeypatch.setattr(capture_service_module, "find_input_device", lambda name: fake_device)
+
+    original = np.full((100, 1), 30000, dtype=np.int16)
+    monkeypatch.setattr(
+        capture_service_module.sd, "InputStream", lambda **kwargs: _FakeInputStream([original], **kwargs)
+    )
+
+    incoming_dir = tmp_path / "incoming"
+    service = CaptureService(_audio_config(gain=3.0), incoming_dir)
+    service.run(max_segments=1)
+
+    wav_files = sorted(incoming_dir.glob("*.wav"))
+    written_samples = _read_wav_samples(wav_files[0])
+    assert all(sample == 32767 for sample in written_samples)  # clipped, never a wrapped negative value
+
+
+# -- device switching (user request: "in case there is more than one mic") --
+
+
+def test_capture_switches_device_live_without_error_or_backoff(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from backyard_bird.audio.device_control import write_device_control
+
+    device_a = SimpleNamespace(index=0, name="Mic A")
+    device_b = SimpleNamespace(index=1, name="Mic B")
+    monkeypatch.setattr(
+        capture_service_module, "find_input_device", lambda name: {"Mic A": device_a, "Mic B": device_b}.get(name)
+    )
+
+    # Guarantees the periodic device-presence/switch check fires on
+    # essentially every loop iteration, without this test actually
+    # waiting out the real 5-second interval.
+    fake_clock = {"t": 0.0}
+
+    def _fake_monotonic() -> float:
+        fake_clock["t"] += 10.0
+        return fake_clock["t"]
+
+    monkeypatch.setattr(capture_service_module.time, "monotonic", _fake_monotonic)
+
+    one_segment = np.arange(100, dtype=np.int16).reshape(-1, 1)
+
+    def _input_stream(**kwargs: object) -> _FakeInputStream:
+        # Device A gets no chunks at all — proves the switch is
+        # noticed before anything from the old device is ever
+        # processed, not just that new chunks land on the new one.
+        chunks = [] if kwargs["device"] == device_a.index else [one_segment]
+        return _FakeInputStream(chunks, **kwargs)
+
+    monkeypatch.setattr(capture_service_module.sd, "InputStream", _input_stream)
+
+    device_control_path = tmp_path / "run" / "mic_device.json"
+    write_device_control(device_control_path, "Mic B")  # dashboard already requested this before capture starts
+
+    incoming_dir = tmp_path / "incoming"
+    status_path = tmp_path / "run" / "mic_status.json"
+    service = CaptureService(
+        _audio_config(device_name="Mic A"),
+        incoming_dir,
+        status_path=status_path,
+        device_control_path=device_control_path,
+    )
+
+    written = service.run(max_segments=1)
+
+    assert written == 1
+    assert len(list(incoming_dir.glob("*.wav"))) == 1
+    status = read_mic_status(status_path)
+    # A deliberate switch must never look like a failure: no "error"
+    # status, and (implicitly, since this test has no reconnect-wait
+    # sleep budget) no backoff delay either.
+    assert status["status"] != "error"
+    assert status["device_name"] == "Mic B"
+
+
+def test_capture_without_device_control_path_never_switches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Existing behavior, unchanged: a caller/test that doesn't pass
+    # device_control_path (e.g. every other test in this file) keeps
+    # using the configured device for the whole run, even if a stray
+    # mic_device.json happens to exist on disk.
+    from backyard_bird.audio.device_control import write_device_control
+
+    fake_device = SimpleNamespace(index=0, name="Mic A")
+    monkeypatch.setattr(capture_service_module, "find_input_device", lambda name: fake_device)
+
+    fake_clock = {"t": 0.0}
+    monkeypatch.setattr(
+        capture_service_module.time, "monotonic", lambda: fake_clock.update(t=fake_clock["t"] + 10.0) or fake_clock["t"]
+    )
+
+    one_segment = np.arange(100, dtype=np.int16).reshape(-1, 1)
+    monkeypatch.setattr(
+        capture_service_module.sd, "InputStream", lambda **kwargs: _FakeInputStream([one_segment], **kwargs)
+    )
+
+    write_device_control(tmp_path / "run" / "mic_device.json", "Mic B")  # present, but never consulted
+
+    incoming_dir = tmp_path / "incoming"
+    service = CaptureService(_audio_config(device_name="Mic A"), incoming_dir)  # no device_control_path
+
+    written = service.run(max_segments=1)
+
+    assert written == 1
+    assert len(list(incoming_dir.glob("*.wav"))) == 1
+
+
 def test_missing_device_is_reported_and_does_not_crash(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

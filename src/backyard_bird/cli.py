@@ -181,9 +181,16 @@ def capture_run(ctx: click.Context, max_segments: int | None) -> None:
 
     incoming_dir = app_config.system.data_directory / "audio" / "incoming"
     status_path = app_config.system.data_directory / "run" / "mic_status.json"
+    gain_control_path = app_config.system.data_directory / "run" / "mic_gain.json"
+    device_control_path = app_config.system.data_directory / "run" / "mic_device.json"
     live_monitor_port = app_config.audio.live_monitor_port if app_config.audio.enable_live_monitor else None
     service = CaptureService(
-        app_config.audio, incoming_dir, status_path=status_path, live_monitor_port=live_monitor_port
+        app_config.audio,
+        incoming_dir,
+        status_path=status_path,
+        live_monitor_port=live_monitor_port,
+        gain_control_path=gain_control_path,
+        device_control_path=device_control_path,
     )
 
     def _handle_signal(signum: int, frame: object) -> None:
@@ -518,7 +525,7 @@ def dashboard_run(ctx: click.Context, host: str | None, port: int | None, reload
 
     host, port = _resolve_dashboard_host_port(host, port, app_config.dashboard)
 
-    app = create_app(app_config)
+    app = create_app(app_config, config_path=config_path)
     click.echo(f"Dashboard running on http://{host}:{port}  (Ctrl-C to stop)")
     if host not in ("127.0.0.1", "localhost"):
         # 0.0.0.0 means "every interface" — not itself a usable URL, so
@@ -661,6 +668,56 @@ def images_watch(ctx: click.Context, interval_seconds: float) -> None:
         conn, providers, app_config.images, images_root, stop_event, poll_interval_seconds=interval_seconds
     )
     conn.close()
+
+
+@cli.group()
+def recordings() -> None:
+    """Best-recording clip commands (§12.4's design-pivot note)."""
+
+
+@recordings.command("backfill-spectrograms")
+@click.pass_context
+def recordings_backfill_spectrograms(ctx: click.Context) -> None:
+    """Generate spectrogram.png for every existing best_recordings clip.
+
+    One-off catch-up for clips extracted before spectrogram generation
+    existed (added 2026-09-18) — new clips get one automatically as
+    part of analyze run/file (see analysis/worker.py). Safe to re-run:
+    it just regenerates and overwrites each spectrogram.png in place.
+    """
+    from backyard_bird.audio.clips import species_spectrogram_path
+    from backyard_bird.audio.spectrogram import generate_spectrogram
+    from backyard_bird.database.connection import get_connection
+    from backyard_bird.database.migrations import apply_migrations
+    from backyard_bird.database.repositories import get_best_recordings_by_scientific_name
+
+    config_path: Path = ctx.obj["config_path"]
+    app_config = _load_config_or_exit(config_path)
+    configure_logging(app_config.system.log_level, service_name="bird_recordings")
+
+    conn = get_connection(_db_path(app_config))
+    apply_migrations(conn, MIGRATIONS_DIR)
+    best_recordings = get_best_recordings_by_scientific_name(conn)
+    conn.close()
+
+    if not best_recordings:
+        click.echo("No best_recordings clips found.")
+        return
+
+    best_clips_root = app_config.system.data_directory / "audio" / "best_clips"
+    succeeded = 0
+    for scientific_name, row in best_recordings.items():
+        clip_path = Path(row["clip_path"])
+        dest_path = species_spectrogram_path(best_clips_root, scientific_name)
+        try:
+            generate_spectrogram(clip_path, dest_path)
+        except Exception as exc:  # noqa: BLE001 — one bad clip must not stop the rest
+            click.echo(f"  {scientific_name}: FAILED ({exc})")
+            continue
+        succeeded += 1
+        click.echo(f"  {scientific_name}: OK")
+
+    click.echo(f"Backfilled {succeeded}/{len(best_recordings)} spectrograms.")
 
 
 _STATUS_MARKERS = {"pass": "OK  ", "warn": "WARN", "fail": "FAIL"}

@@ -15,6 +15,8 @@ from typing import Literal
 import yaml
 from pydantic import BaseModel, Field, ValidationError
 
+from backyard_bird.audio.gain import GAIN_MAX, GAIN_MIN
+
 
 class ConfigError(Exception):
     """Raised when the configuration file is missing, unreadable, or invalid."""
@@ -65,6 +67,12 @@ class AudioConfig(BaseModel):
     # decision — see README's LAN access notes).
     enable_live_monitor: bool = True
     live_monitor_port: int = Field(default=8766, ge=1, le=65535)
+    # Software gain (user request): a linear multiplier applied to
+    # every captured sample (see audio/gain.py) to compensate for a
+    # mic whose input level runs low by default. This is only the
+    # startup value — the dashboard can adjust it live afterward
+    # without restarting capture, via data/run/mic_gain.json.
+    gain: float = Field(default=1.0, ge=GAIN_MIN, le=GAIN_MAX)
 
 
 class BirdNETConfig(BaseModel):

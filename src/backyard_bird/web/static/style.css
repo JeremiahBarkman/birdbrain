@@ -32,15 +32,15 @@ body {
   background: var(--bg);
   color: var(--text);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  /* 960px was tuned before the species table grew to 8 columns
-     (thumbnail, species, detections, confidence, recording w/
-     playback + star/save buttons, first/last seen, seen-for) — on a
-     1920x1080 display that forced .table-scroll's overflow-x into
-     constant use even though the window had plenty of room. 1400px
-     comfortably fits all 8 columns without horizontal scroll on a
-     typical desktop window, while still leaving real side margins
-     rather than stretching edge-to-edge on a wide monitor. */
-  max-width: 1400px;
+  /* 960px, then a fixed 1400px, were both tuned for the species
+     table's column count at the time — but a fixed pixel width always
+     under-uses a wide/high-res monitor by some amount, and long common
+     names (e.g. "Golden-crowned Kinglet") were forcing .table-scroll's
+     overflow-x on exactly those wider screens where there was room to
+     spare. 90% of the viewport instead of a fixed number scales with
+     the actual window, while still leaving real side margins rather
+     than stretching edge-to-edge. */
+  max-width: 90vw;
   margin-inline: auto;
 }
 
@@ -133,9 +133,14 @@ h2 {
   background: #c0392b;
 }
 
-.mic-status-device {
+.mic-device-select {
   color: var(--text-muted);
   font-size: 0.85rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+  max-width: 220px;
 }
 
 .mic-status-listen {
@@ -167,6 +172,41 @@ h2 {
 
 .level-meter-fill.is-clipping {
   background: #c0392b;
+}
+
+.gain-control-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-top: 0.6rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.gain-control-row input[type="range"] {
+  flex: 1;
+  max-width: 260px;
+}
+
+.gain-control-row #gain-value {
+  min-width: 3.2em; /* keeps the slider from jittering horizontally as the digit count changes */
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Hidden until "Listen Live" is active — see dashboard.js's
+   startLiveSpectrogram()/stopLiveSpectrogram(). Uses the same dark
+   background + rounded corners as the recording spectrograms
+   (style.css's .spectrogram-icon-btn/.spectrogram-wrap) for a
+   consistent look, even though this one is drawn live on a <canvas>
+   rather than served as a PNG. */
+.live-spectrogram {
+  display: block;
+  width: 100%;
+  height: 120px;
+  margin-top: 0.6rem;
+  border-radius: 8px;
+  background: #000;
 }
 
 .most-recent {
@@ -387,6 +427,60 @@ td .scientific {
   color-scheme: light dark; /* lets the native player chrome follow the page's theme */
 }
 
+/* A small clickable thumbnail, deliberately not readable at this size
+   — it's an entry point into #recording-modal's large view, not meant
+   to replace it. Fixed square + object-fit: cover crops the PNG's
+   wide aspect ratio (see audio/spectrogram.py) rather than squashing
+   it, since legibility doesn't matter at 32px anyway. */
+.spectrogram-icon-btn {
+  display: block;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  background: #000;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.spectrogram-icon {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+/* The large view inside #recording-modal — see index.html. Sized off
+   the PNG's native 440x112 aspect ratio (audio/spectrogram.py) so it
+   never looks stretched at this much bigger size. */
+.spectrogram-wrap.large {
+  position: relative;
+  width: min(800px, 85vw);
+  aspect-ratio: 440 / 112;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.spectrogram-wrap.large .spectrogram {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: fill;
+}
+
+.spectrogram-playhead {
+  position: absolute;
+  top: 0;
+  left: 0%;
+  width: 2px;
+  height: 100%;
+  background: rgba(255, 255, 255, 0.85);
+  pointer-events: none;
+}
+
 .no-recording {
   color: var(--text-muted);
 }
@@ -526,6 +620,26 @@ td .scientific {
   line-height: 1;
   cursor: pointer;
   padding: 0.5rem;
+}
+
+.recording-modal-content {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1rem;
+  cursor: default; /* the backdrop around this is what closes the modal, not the content itself */
+}
+
+.recording-modal-title {
+  color: #fff;
+  font-weight: 600;
+  font-size: 1.1rem;
+  text-align: center;
+}
+
+.recording-modal-content audio {
+  width: min(800px, 85vw);
+  color-scheme: light dark;
 }
 
 /* Below tablet width, the 7-column species table stops being

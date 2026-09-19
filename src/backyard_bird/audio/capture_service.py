@@ -35,7 +35,9 @@ from pathlib import Path
 import numpy as np
 import sounddevice as sd
 
+from backyard_bird.audio.device_control import read_device_control
 from backyard_bird.audio.devices import find_input_device
+from backyard_bird.audio.gain import apply_gain, clamp_gain, read_gain_control
 from backyard_bird.audio.levels import MicLevel, compute_level, write_mic_status
 from backyard_bird.audio.live_monitor import LiveMonitorServer, start_live_monitor_server
 from backyard_bird.audio.retention import enforce_disk_space_floor, sweep_incoming
@@ -49,6 +51,7 @@ _DEVICE_PRESENCE_CHECK_SECONDS = 5.0
 _RETENTION_SWEEP_INTERVAL_SECONDS = 3600.0
 _RECONNECT_BACKOFF_SECONDS = (2, 5, 10, 30, 60)
 _STATUS_WRITE_INTERVAL_SECONDS = 1.0  # matches the dashboard's ~1x/second poll (user request)
+_GAIN_CHECK_INTERVAL_SECONDS = 1.0  # how often to notice a dashboard-adjusted gain (user request)
 
 
 class CaptureService:
@@ -61,6 +64,8 @@ class CaptureService:
         microphone_id: str | None = None,
         status_path: Path | None = None,
         live_monitor_port: int | None = None,
+        gain_control_path: Path | None = None,
+        device_control_path: Path | None = None,
     ) -> None:
         self.config = audio_config
         self.incoming_dir = incoming_dir
@@ -74,11 +79,26 @@ class CaptureService:
         # resolves to at the CLI layer) means this feature simply
         # doesn't exist for this instance.
         self.live_monitor_port = live_monitor_port
+        # Same optionality again: no gain_control_path means gain is
+        # fixed at audio_config.gain for the process lifetime (e.g. in
+        # tests), rather than polled live from the dashboard.
+        self.gain_control_path = gain_control_path
+        # Same optionality again: no device_control_path means the
+        # configured device is fixed for the process lifetime, rather
+        # than switchable live from the dashboard.
+        self.device_control_path = device_control_path
         self._live_monitor_server: LiveMonitorServer | None = None
         self._stop_event = threading.Event()
         self._chunk_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=_QUEUE_MAX_CHUNKS)
         self._last_retention_sweep = 0.0
         self._last_status_write = 0.0
+        self._last_gain_check = 0.0
+        self._current_gain = clamp_gain(audio_config.gain)
+        # The device currently in use (or being sought) — distinct from
+        # self.config.device_name, which stays whatever the process
+        # started with, so a dashboard-requested switch doesn't need to
+        # mutate the (otherwise immutable-for-this-run) config object.
+        self._current_device_name = audio_config.device_name
 
     def _write_status(self, status: str, level: MicLevel | None = None, error_message: str | None = None) -> None:
         if self.status_path is None:
@@ -86,7 +106,7 @@ class CaptureService:
         try:
             write_mic_status(
                 self.status_path,
-                device_name=self.config.device_name,
+                device_name=self._current_device_name,
                 status=status,
                 level=level,
                 error_message=error_message,
@@ -120,10 +140,10 @@ class CaptureService:
 
         while not self._stop_event.is_set():
             try:
-                device = find_input_device(self.config.device_name)
+                device = find_input_device(self._current_device_name)
                 if device is None:
                     raise RuntimeError(
-                        f"Configured microphone not found: {self.config.device_name!r}"
+                        f"Configured microphone not found: {self._current_device_name!r}"
                     )
                 logger.info(
                     "capture_starting",
@@ -134,7 +154,7 @@ class CaptureService:
                     },
                 )
                 segments_written += self._capture_until_error(
-                    device.index, max_segments, segments_written
+                    device.index, self._current_device_name, max_segments, segments_written
                 )
                 attempt = 0  # this attempt ran cleanly; reset backoff for any future drop
                 if max_segments is not None and segments_written >= max_segments:
@@ -189,7 +209,7 @@ class CaptureService:
                 pass
 
     def _capture_until_error(
-        self, device_index: int, max_segments: int | None, already_written: int
+        self, device_index: int, device_name: str, max_segments: int | None, already_written: int
     ) -> int:
         stream_started_at = datetime.now(timezone.utc)
         segmenter = AudioSegmenter(
@@ -217,10 +237,26 @@ class CaptureService:
                 now = time.monotonic()
                 if now - last_presence_check >= _DEVICE_PRESENCE_CHECK_SECONDS:
                     last_presence_check = now
-                    if find_input_device(self.config.device_name) is None:
-                        raise RuntimeError(
-                            f"Microphone disappeared: {self.config.device_name!r}"
-                        )
+                    if self.device_control_path is not None:
+                        desired = read_device_control(self.device_control_path, default=device_name)
+                        if desired != device_name:
+                            # A deliberate dashboard-requested switch,
+                            # not a failure — clean return (not raise)
+                            # so run()'s loop reopens on the new device
+                            # immediately, with no backoff wait and no
+                            # "error" status written for what isn't one.
+                            logger.info(
+                                "capture_device_switch_requested",
+                                extra={
+                                    "event": "capture_device_switch_requested",
+                                    "from_device": device_name,
+                                    "to_device": desired,
+                                },
+                            )
+                            self._current_device_name = desired
+                            return written
+                    if find_input_device(device_name) is None:
+                        raise RuntimeError(f"Microphone disappeared: {device_name!r}")
                 if now - self._last_retention_sweep >= _RETENTION_SWEEP_INTERVAL_SECONDS:
                     self._last_retention_sweep = now
                     sweep_incoming(self.incoming_dir, self.config.raw_audio_retention_days)
@@ -241,6 +277,19 @@ class CaptureService:
                     chunk = self._chunk_queue.get(timeout=1.0)
                 except queue.Empty:
                     continue
+
+                if self.gain_control_path is not None:
+                    gain_check_time = time.monotonic()
+                    if gain_check_time - self._last_gain_check >= _GAIN_CHECK_INTERVAL_SECONDS:
+                        self._last_gain_check = gain_check_time
+                        self._current_gain = read_gain_control(self.gain_control_path, default=self._current_gain)
+                # Applied here, once, ahead of every downstream use of
+                # `chunk` below (the level meter, the live-monitor
+                # relay, and the segments actually written to disk) —
+                # so raising it from the dashboard boosts all three
+                # consistently rather than just the ones a caller
+                # remembers to apply it to individually.
+                chunk = apply_gain(chunk, self._current_gain)
 
                 if now - self._last_status_write >= _STATUS_WRITE_INTERVAL_SECONDS:
                     self._last_status_write = now
