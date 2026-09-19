@@ -1,4 +1,4 @@
-![Dashboard screenshot](screencapture-10-0-0-218-8765-2026-09-06-22_26_01.png)
+![Dashboard screenshot](dashboard-screenshot.png)
 # Backyard Bird Discovery System
 
 Local-first pipeline: outdoor microphone → BirdNET-Analyzer → SQLite
