@@ -247,6 +247,26 @@ def test_api_stats_includes_recording_info(client_with_recording) -> None:
     # best-effort (worker.py), so a missing file must read as "no
     # spectrogram yet," not a broken image link.
     assert recording["spectrogram_url"] is None
+    # This fixture's clip.wav is fake (non-WAV) bytes, so duration/rate
+    # can't be read — must degrade to None, not 500 the whole request.
+    assert recording["duration_seconds"] is None
+    assert recording["sample_rate"] is None
+
+
+def test_api_stats_includes_real_clip_duration_and_sample_rate(client_with_recording, tmp_path: Path) -> None:
+    import wave
+
+    clip_path = species_clip_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
+    with wave.open(str(clip_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(48000)
+        wav_file.writeframes(b"\x00\x00" * 48000 * 3)  # 3 seconds of silence
+
+    data = client_with_recording.get("/api/stats").get_json()
+    recording = data["species"][0]["recording"]
+    assert recording["duration_seconds"] == pytest.approx(3.0)
+    assert recording["sample_rate"] == 48000
 
 
 def test_api_stats_includes_spectrogram_url_when_file_exists(client_with_recording, tmp_path: Path) -> None:
@@ -266,6 +286,47 @@ def test_species_spectrogram_is_served(client_with_recording, tmp_path: Path) ->
 
     assert response.status_code == 200
     assert response.data == b"\x89PNG\r\n\x1a\n fake png bytes for testing"
+
+
+def test_species_spectrogram_highpass_returns_a_regenerated_png(
+    client_with_recording, tmp_path: Path
+) -> None:
+    import wave
+
+    import numpy as np
+
+    clip_path = species_clip_path(tmp_path / "audio" / "best_clips", SCIENTIFIC)
+    sample_rate = 48000
+    t = np.arange(sample_rate * 2) / sample_rate
+    tone = (np.sin(2 * np.pi * 2000 * t) * 20000).astype(np.int16)
+    with wave.open(str(clip_path), "wb") as wav_file:
+        wav_file.setnchannels(1)
+        wav_file.setsampwidth(2)
+        wav_file.setframerate(sample_rate)
+        wav_file.writeframes(tone.tobytes())
+    species_spectrogram_path(tmp_path / "audio" / "best_clips", SCIENTIFIC).write_bytes(b"cached default png")
+
+    plain = client_with_recording.get("/media/audio/poecile-atricapillus/spectrogram.png")
+    filtered = client_with_recording.get("/media/audio/poecile-atricapillus/spectrogram.png?highpass=10000")
+
+    assert plain.status_code == 200
+    assert plain.data == b"cached default png"  # no highpass param -> serves the cached file untouched
+    assert filtered.status_code == 200
+    assert filtered.data != plain.data  # a real, freshly rendered PNG, not the cached default
+    assert filtered.data.startswith(b"\x89PNG")
+
+
+def test_species_spectrogram_highpass_falls_back_to_cached_file_on_bad_clip(
+    client_with_recording, tmp_path: Path
+) -> None:
+    # client_with_recording's clip.wav is fake (non-WAV) bytes -
+    # rendering must fail closed to the cached default, not 500.
+    species_spectrogram_path(tmp_path / "audio" / "best_clips", SCIENTIFIC).write_bytes(b"cached default png")
+
+    response = client_with_recording.get("/media/audio/poecile-atricapillus/spectrogram.png?highpass=500")
+
+    assert response.status_code == 200
+    assert response.data == b"cached default png"
 
 
 def test_species_clip_is_served_for_playback(client_with_recording) -> None:
@@ -316,6 +377,57 @@ def test_star_recording_species_with_no_recording_yet_404s(tmp_path: Path) -> No
         response = c.post(f"/api/species/{SCIENTIFIC}/recording/star", json={"approved": True})
 
     assert response.status_code == 404
+
+
+# -- recording high-pass filter selection (user request: remember it) -------
+
+
+def test_api_stats_includes_default_highpass(client_with_recording) -> None:
+    data = client_with_recording.get("/api/stats").get_json()
+    assert data["species"][0]["recording"]["highpass_hz"] == 0
+
+
+def test_set_recording_highpass_persists(client_with_recording) -> None:
+    response = client_with_recording.post(
+        f"/api/species/{SCIENTIFIC}/recording/highpass", json={"highpass_hz": 1000}
+    )
+    assert response.status_code == 200
+    assert response.get_json()["highpass_hz"] == 1000
+
+    data = client_with_recording.get("/api/stats").get_json()
+    assert data["species"][0]["recording"]["highpass_hz"] == 1000
+
+
+def test_set_recording_highpass_back_to_off(client_with_recording) -> None:
+    client_with_recording.post(f"/api/species/{SCIENTIFIC}/recording/highpass", json={"highpass_hz": 1000})
+    response = client_with_recording.post(
+        f"/api/species/{SCIENTIFIC}/recording/highpass", json={"highpass_hz": 0}
+    )
+    assert response.get_json()["highpass_hz"] == 0
+
+
+def test_set_recording_highpass_unknown_species_404s(client_with_recording) -> None:
+    response = client_with_recording.post(
+        "/api/species/Nonexistent species/recording/highpass", json={"highpass_hz": 500}
+    )
+    assert response.status_code == 404
+
+
+def test_set_recording_highpass_species_with_no_recording_yet_404s(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path, with_image=False, with_recording=False)
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.post(f"/api/species/{SCIENTIFIC}/recording/highpass", json={"highpass_hz": 500})
+
+    assert response.status_code == 404
+
+
+def test_set_recording_highpass_rejects_non_numeric_value(client_with_recording) -> None:
+    response = client_with_recording.post(
+        f"/api/species/{SCIENTIFIC}/recording/highpass", json={"highpass_hz": "loud"}
+    )
+    assert response.status_code == 400
 
 
 # -- reject/delete species ("kill a false detection", dashboard feature) -----

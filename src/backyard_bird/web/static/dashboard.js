@@ -136,6 +136,10 @@ function recordingCellHtml(recording, scientificName, commonName) {
         data-spectrogram-url="${recording.spectrogram_url}"
         data-recording-url="${recording.url}"
         data-title="${commonName} (${scientificName})"
+        data-duration-seconds="${recording.duration_seconds ?? ""}"
+        data-sample-rate="${recording.sample_rate ?? ""}"
+        data-highpass-hz="${recording.highpass_hz ?? 0}"
+        data-scientific="${scientificName}"
         title="View spectrogram and play recording"
       ><img class="spectrogram-icon" src="${recording.spectrogram_url}" alt="Spectrogram of ${scientificName}'s call"></button>`
     : "";
@@ -332,12 +336,97 @@ document.body.addEventListener(
 const recordingModal = document.getElementById("recording-modal");
 const recordingModalAudio = document.getElementById("recording-modal-audio");
 const recordingModalPlayhead = document.getElementById("recording-modal-playhead");
+const recordingHighpassSelect = document.getElementById("recording-highpass-select");
 
-function openRecordingModal(spectrogramUrl, recordingUrl, title) {
+// 5 evenly spaced ticks on each axis — enough to read the scale
+// without crowding a ~200px-tall chart.
+const RECORDING_AXIS_TICK_COUNT = 5;
+
+// Shared by the recording modal (a fixed clip, real sample rate) and
+// the live "Listen Live" panel (an open-ended stream, the browser
+// AudioContext's own sample rate) — both just need "nyquist -> 0"
+// labeled top to bottom, matching the spectrogram's own
+// low-frequencies-at-the-bottom convention (audio/spectrogram.py).
+function renderFrequencyAxis(axisElementId, sampleRate) {
+  const axis = document.getElementById(axisElementId);
+  if (!sampleRate) {
+    axis.innerHTML = "";
+    return;
+  }
+  const nyquist = sampleRate / 2; // the highest frequency this sample rate can represent
+  const labels = [];
+  for (let i = 0; i < RECORDING_AXIS_TICK_COUNT; i++) {
+    const hz = nyquist - (nyquist / (RECORDING_AXIS_TICK_COUNT - 1)) * i;
+    labels.push(hz >= 1000 ? `${(hz / 1000).toFixed(hz % 1000 === 0 ? 0 : 1)}k` : `${Math.round(hz)}`);
+  }
+  axis.innerHTML = labels.map((label) => `<span>${label}</span>`).join("");
+}
+
+function renderTimeAxis(durationSeconds) {
+  const axis = document.getElementById("recording-modal-time-axis");
+  if (!durationSeconds) {
+    axis.innerHTML = "";
+    return;
+  }
+  const labels = [];
+  for (let i = 0; i < RECORDING_AXIS_TICK_COUNT; i++) {
+    const seconds = (durationSeconds / (RECORDING_AXIS_TICK_COUNT - 1)) * i;
+    labels.push(`${seconds.toFixed(seconds < 10 ? 1 : 0)}s`);
+  }
+  axis.innerHTML = labels.map((label) => `<span>${label}</span>`).join("");
+}
+
+// High-pass filtering (user request, modeled on birdnet-go's
+// spectrogram viewer): a real Web Audio BiquadFilterNode actually
+// filters what you hear on playback, while the visible image is
+// re-rendered server-side at the same cutoff (?highpass=<hz> on the
+// same spectrogram route — see web/routes.py) so what you see matches
+// what you hear. A frequency of 0 is "Off": a highpass filter with a
+// 0Hz cutoff has nothing below it to attenuate, so this needs no
+// separate bypass/on-off state. The selection is remembered per
+// species (user request) — GET/POST /api/species/<name>/recording/
+// highpass, persisted in best_recordings.highpass_hz — so reopening a
+// species later restores its filter instead of resetting to Off.
+let recordingAudioCtx = null;
+let recordingHighpassFilter = null;
+let currentSpectrogramBaseUrl = "";
+let currentRecordingScientificName = "";
+
+// Must run synchronously inside the click handler that opens the
+// modal (a real user gesture) — same constraint as the live monitor's
+// ensureLiveAudioGraph(), and for the same reason: browsers refuse to
+// start an AudioContext outside one.
+function ensureRecordingAudioGraph() {
+  if (!recordingHighpassFilter) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    recordingAudioCtx = new AudioContextClass();
+    const source = recordingAudioCtx.createMediaElementSource(recordingModalAudio);
+    recordingHighpassFilter = recordingAudioCtx.createBiquadFilter();
+    recordingHighpassFilter.type = "highpass";
+    recordingHighpassFilter.frequency.value = 0;
+    source.connect(recordingHighpassFilter);
+    // Required for the element to still be audible — once
+    // createMediaElementSource() is called, its normal output no
+    // longer reaches the speakers on its own.
+    recordingHighpassFilter.connect(recordingAudioCtx.destination);
+  }
+  if (recordingAudioCtx.state === "suspended") recordingAudioCtx.resume();
+}
+
+function openRecordingModal(spectrogramUrl, recordingUrl, title, durationSeconds, sampleRate, highpassHz, scientificName) {
+  ensureRecordingAudioGraph();
+  currentSpectrogramBaseUrl = spectrogramUrl;
+  currentRecordingScientificName = scientificName;
+  const hz = highpassHz || 0;
+  recordingHighpassSelect.value = String(hz);
+  recordingHighpassFilter.frequency.value = hz;
+
   document.getElementById("recording-modal-title").textContent = title;
-  document.getElementById("recording-modal-spectrogram").src = spectrogramUrl;
+  document.getElementById("recording-modal-spectrogram").src = hz ? `${spectrogramUrl}?highpass=${hz}` : spectrogramUrl;
   recordingModalPlayhead.style.left = "0%";
   recordingModalAudio.src = recordingUrl;
+  renderFrequencyAxis("recording-modal-freq-axis", sampleRate);
+  renderTimeAxis(durationSeconds);
   recordingModal.hidden = false;
 }
 
@@ -351,10 +440,40 @@ function closeRecordingModal() {
   document.getElementById("recording-modal-spectrogram").src = "";
 }
 
+recordingHighpassSelect.addEventListener("change", async () => {
+  const hz = Number(recordingHighpassSelect.value);
+  recordingHighpassFilter.frequency.value = hz;
+  document.getElementById("recording-modal-spectrogram").src = hz
+    ? `${currentSpectrogramBaseUrl}?highpass=${hz}`
+    : currentSpectrogramBaseUrl;
+
+  try {
+    const response = await fetch(
+      `/api/species/${encodeURIComponent(currentRecordingScientificName)}/recording/highpass`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ highpass_hz: hz }),
+      }
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (err) {
+    console.error("recording highpass persist failed:", err);
+  }
+});
+
 document.body.addEventListener("click", (event) => {
   const iconBtn = event.target.closest(".spectrogram-icon-btn");
   if (!iconBtn) return;
-  openRecordingModal(iconBtn.dataset.spectrogramUrl, iconBtn.dataset.recordingUrl, iconBtn.dataset.title);
+  openRecordingModal(
+    iconBtn.dataset.spectrogramUrl,
+    iconBtn.dataset.recordingUrl,
+    iconBtn.dataset.title,
+    Number(iconBtn.dataset.durationSeconds) || null,
+    Number(iconBtn.dataset.sampleRate) || null,
+    Number(iconBtn.dataset.highpassHz) || 0,
+    iconBtn.dataset.scientific
+  );
 });
 
 recordingModal.addEventListener("click", (event) => {
@@ -529,10 +648,15 @@ let liveMonitorActive = false;
 // and kept alive across stop/start cycles (rather than torn down and
 // rebuilt) because a media element can only ever be passed to
 // createMediaElementSource() once in its lifetime.
+const liveSpectrogramPanel = document.getElementById("live-spectrogram-panel");
 const liveSpectrogramCanvas = document.getElementById("live-spectrogram-canvas");
+const liveHighpassSelect = document.getElementById("live-highpass-select");
+const liveZoomSelect = document.getElementById("live-zoom-select");
 let liveAudioCtx = null;
 let liveAnalyser = null;
+let liveHighpassFilter = null;
 let liveSpectrogramRAF = null;
+const LIVE_SPECTROGRAM_BASE_HEIGHT_PX = 120; // the 1x size; 2x/3x scale this directly
 
 // The same 5-stop magma-like gradient audio/spectrogram.py uses for
 // the per-species PNGs, reimplemented here in JS so the live view and
@@ -565,11 +689,23 @@ function ensureLiveAudioGraph() {
     const AudioContextClass = window.AudioContext || window.webkitAudioContext;
     liveAudioCtx = new AudioContextClass();
     const source = liveAudioCtx.createMediaElementSource(liveMonitorAudio);
+    // High-pass filtering (user request): inserted *before* the
+    // analyser, not just in parallel with it — so unlike the static
+    // per-clip spectrogram (a pre-rendered PNG that needs a separate
+    // server request to reflect a filter change), the live waterfall
+    // automatically shows whatever the filter actually leaves behind,
+    // for free, just by reading from the same graph a real one flows
+    // through. A frequency of 0 is "Off": nothing below it to
+    // attenuate, so no separate bypass state is needed.
+    liveHighpassFilter = liveAudioCtx.createBiquadFilter();
+    liveHighpassFilter.type = "highpass";
+    liveHighpassFilter.frequency.value = 0;
     liveAnalyser = liveAudioCtx.createAnalyser();
     liveAnalyser.fftSize = 2048;
     liveAnalyser.minDecibels = -90;
     liveAnalyser.maxDecibels = -10;
-    source.connect(liveAnalyser);
+    source.connect(liveHighpassFilter);
+    liveHighpassFilter.connect(liveAnalyser);
     // Required for the element to still be audible — once
     // createMediaElementSource() is called, its normal output no
     // longer reaches the speakers on its own.
@@ -578,10 +714,14 @@ function ensureLiveAudioGraph() {
   if (liveAudioCtx.state === "suspended") liveAudioCtx.resume();
 }
 
-function startLiveSpectrogram() {
-  if (!liveAnalyser) return; // ensureLiveAudioGraph() wasn't called, or creating it failed
-  liveSpectrogramCanvas.hidden = false;
-
+// Resets the canvas's internal pixel buffer to match its current
+// on-screen size (accounting for both the 1x/2x/3x zoom, which
+// changes its CSS height, and devicePixelRatio, for a sharp image on
+// retina displays) — shared by the initial start and every zoom
+// change, both of which need a freshly cleared buffer at the new size
+// rather than whatever stretched/cropped leftover content a plain CSS
+// resize alone would show.
+function resizeLiveSpectrogramCanvasBuffer() {
   const rect = liveSpectrogramCanvas.getBoundingClientRect();
   const dpr = window.devicePixelRatio || 1;
   liveSpectrogramCanvas.width = Math.max(1, Math.round(rect.width * dpr));
@@ -590,7 +730,21 @@ function startLiveSpectrogram() {
   const ctx = liveSpectrogramCanvas.getContext("2d");
   ctx.fillStyle = "#000";
   ctx.fillRect(0, 0, liveSpectrogramCanvas.width, liveSpectrogramCanvas.height);
+}
 
+function applyLiveSpectrogramZoom() {
+  const zoom = Number(liveZoomSelect.value) || 1;
+  liveSpectrogramCanvas.style.height = `${LIVE_SPECTROGRAM_BASE_HEIGHT_PX * zoom}px`;
+  resizeLiveSpectrogramCanvasBuffer(); // changing size invalidates whatever was already drawn anyway
+}
+
+function startLiveSpectrogram() {
+  if (!liveAnalyser) return; // ensureLiveAudioGraph() wasn't called, or creating it failed
+  liveSpectrogramPanel.hidden = false;
+  applyLiveSpectrogramZoom();
+  renderFrequencyAxis("live-freq-axis", liveAudioCtx.sampleRate);
+
+  const ctx = liveSpectrogramCanvas.getContext("2d");
   const freqData = new Uint8Array(liveAnalyser.frequencyBinCount);
 
   function draw() {
@@ -617,8 +771,20 @@ function startLiveSpectrogram() {
 function stopLiveSpectrogram() {
   if (liveSpectrogramRAF) cancelAnimationFrame(liveSpectrogramRAF);
   liveSpectrogramRAF = null;
-  liveSpectrogramCanvas.hidden = true;
+  // Folded away entirely while inactive (user request) — not just an
+  // empty canvas, but the whole panel including the highpass/zoom
+  // controls, so none of it is visible or takes up space until
+  // "Listen Live" is actually running.
+  liveSpectrogramPanel.hidden = true;
 }
+
+liveHighpassSelect.addEventListener("change", () => {
+  if (liveHighpassFilter) liveHighpassFilter.frequency.value = Number(liveHighpassSelect.value);
+});
+
+liveZoomSelect.addEventListener("change", () => {
+  if (!liveSpectrogramPanel.hidden) applyLiveSpectrogramZoom();
+});
 
 function stopLiveMonitor() {
   liveMonitorAudio.pause();

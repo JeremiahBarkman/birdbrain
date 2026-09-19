@@ -30,7 +30,35 @@
       <span id="gain-value">1.0×</span>
     </div>
     <audio id="live-monitor-audio" hidden></audio>
-    <canvas id="live-spectrogram-canvas" class="live-spectrogram" hidden></canvas>
+    <div class="live-spectrogram-panel" id="live-spectrogram-panel" hidden>
+      <div class="live-spectrogram-controls">
+        <label for="live-highpass-select">High-pass</label>
+        <select id="live-highpass-select">
+          <option value="0" selected>Off</option>
+          <option value="250">250 Hz</option>
+          <option value="500">500 Hz</option>
+          <option value="1000">1 kHz</option>
+          <option value="1500">1.5 kHz</option>
+          <option value="2000">2 kHz</option>
+        </select>
+        <label for="live-zoom-select">Size</label>
+        <select id="live-zoom-select">
+          <option value="1" selected>1x</option>
+          <option value="2">2x</option>
+          <option value="3">3x</option>
+        </select>
+      </div>
+      <div class="spectrogram-chart live">
+        <div class="spectrogram-freq-axis" id="live-freq-axis"></div>
+        <canvas id="live-spectrogram-canvas" class="live-spectrogram"></canvas>
+        <div class="spectrogram-legend">
+          <div class="spectrogram-legend-bar"></div>
+          <div class="spectrogram-legend-labels">
+            <span>0</span><span>-20</span><span>-40</span><span>-60</span><span>-80 dB</span>
+          </div>
+        </div>
+      </div>
+    </div>
   </section>
 
   <section class="summary-grid">
@@ -112,9 +140,30 @@
     <button class="image-modal-close" id="recording-modal-close" type="button" aria-label="Close">&times;</button>
     <div class="recording-modal-content">
       <div class="recording-modal-title" id="recording-modal-title"></div>
-      <div class="spectrogram-wrap large">
-        <img class="spectrogram" id="recording-modal-spectrogram" src="" alt="Spectrogram">
-        <div class="spectrogram-playhead" id="recording-modal-playhead"></div>
+      <div class="spectrogram-chart">
+        <div class="spectrogram-freq-axis" id="recording-modal-freq-axis"></div>
+        <div class="spectrogram-wrap large">
+          <img class="spectrogram" id="recording-modal-spectrogram" src="" alt="Spectrogram">
+          <div class="spectrogram-playhead" id="recording-modal-playhead"></div>
+        </div>
+        <div class="spectrogram-legend">
+          <div class="spectrogram-legend-bar"></div>
+          <div class="spectrogram-legend-labels">
+            <span>0</span><span>-20</span><span>-40</span><span>-60</span><span>-80 dB</span>
+          </div>
+        </div>
+        <div class="spectrogram-time-axis" id="recording-modal-time-axis"></div>
+      </div>
+      <div class="recording-modal-controls">
+        <label for="recording-highpass-select">High-pass</label>
+        <select id="recording-highpass-select">
+          <option value="0" selected>Off</option>
+          <option value="250">250 Hz</option>
+          <option value="500">500 Hz</option>
+          <option value="1000">1 kHz</option>
+          <option value="1500">1.5 kHz</option>
+          <option value="2000">2 kHz</option>
+        </select>
       </div>
       <audio id="recording-modal-audio" controls preload="none" src=""></audio>
     </div>

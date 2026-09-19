@@ -5,7 +5,9 @@ schema_migrations.
 
 Migration SQL must use `CREATE TABLE/INDEX IF NOT EXISTS` — see the
 comment in apply_migrations() for why that's what makes this safe to
-re-run after a crash.
+re-run after a crash. `ALTER TABLE ... ADD COLUMN` has no such clause
+in SQLite; apply_migrations() tolerates the one error that specific
+statement can raise on a crash-recovery re-run instead (see below).
 """
 from __future__ import annotations
 
@@ -67,7 +69,24 @@ def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> list[int
     for version, description, path in discover_migrations(migrations_dir):
         if version in already_applied:
             continue
-        conn.executescript(path.read_text())
+        try:
+            conn.executescript(path.read_text())
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc):
+                raise
+            # Only reachable via the exact crash window this module's
+            # docstring describes, for a migration whose DDL is an
+            # ALTER TABLE ADD COLUMN: the column already landed on a
+            # prior run that crashed before the schema_migrations row
+            # below could commit. Recognizing that one specific error
+            # and treating it as already-done is what keeps this
+            # migration idempotent under that window, the same way
+            # CREATE TABLE/INDEX IF NOT EXISTS keeps every other
+            # migration idempotent under it.
+            logger.warning(
+                "migration_add_column_already_applied",
+                extra={"event": "migration_add_column_already_applied", "version": version, "error": str(exc)},
+            )
         conn.execute(
             "INSERT INTO schema_migrations (version, description, applied_at_utc) VALUES (?, ?, ?)",
             (version, description, datetime.now(timezone.utc).isoformat()),

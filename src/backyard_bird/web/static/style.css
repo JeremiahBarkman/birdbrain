@@ -194,17 +194,48 @@ h2 {
   font-variant-numeric: tabular-nums;
 }
 
-/* Hidden until "Listen Live" is active — see dashboard.js's
-   startLiveSpectrogram()/stopLiveSpectrogram(). Uses the same dark
-   background + rounded corners as the recording spectrograms
-   (style.css's .spectrogram-icon-btn/.spectrogram-wrap) for a
-   consistent look, even though this one is drawn live on a <canvas>
-   rather than served as a PNG. */
+/* The whole panel (controls + chart) is folded away until "Listen
+   Live" is active — see dashboard.js's startLiveSpectrogram()/
+   stopLiveSpectrogram() — so it takes up no space and isn't visible
+   at all before then, not just an empty/blank canvas. */
+.live-spectrogram-panel {
+  margin-top: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.live-spectrogram-panel[hidden] {
+  display: none;
+}
+
+.live-spectrogram-controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.5rem 1rem;
+  font-size: 0.85rem;
+  color: var(--text-muted);
+}
+
+.live-spectrogram-controls select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
+}
+
+/* Height set from JS (dashboard.js's applyLiveSpectrogramZoom()) per
+   the 1x/2x/3x size control — 120px is just the 1x starting point.
+   Uses the same dark background + rounded corners as the recording
+   spectrograms (style.css's .spectrogram-icon-btn/.spectrogram-wrap)
+   for a consistent look, even though this one is drawn live on a
+   <canvas> rather than served as a PNG. */
 .live-spectrogram {
   display: block;
   width: 100%;
   height: 120px;
-  margin-top: 0.6rem;
   border-radius: 8px;
   background: #000;
 }
@@ -481,6 +512,105 @@ td .scientific {
   pointer-events: none;
 }
 
+/* Frequency axis (left), the spectrogram image/canvas (center), a dB
+   color key (right), and — for a single clip, not the live view,
+   which has no fixed duration to label — a time axis below. Arranged
+   as a grid so the axis/legend columns stretch to the chart's own
+   height automatically, whatever that ends up being at its responsive
+   width. Shared between the recording modal (.recording-modal-content
+   .spectrogram-chart, sets its own width below since it floats over a
+   dark backdrop) and the live "Listen Live" panel
+   (.spectrogram-chart.live, full width of the page's own background,
+   so its axis text uses the page's theme color instead of white). */
+.spectrogram-chart {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  grid-template-rows: auto auto;
+  gap: 0.4rem 0.5rem;
+}
+
+.recording-modal-content .spectrogram-chart {
+  width: min(800px, 85vw);
+}
+
+.spectrogram-chart.live {
+  width: 100%;
+  grid-template-rows: auto; /* no time axis row here — an open-ended live stream has no fixed duration to label */
+}
+
+.spectrogram-freq-axis {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-align: right;
+}
+
+.spectrogram-chart .spectrogram-wrap.large {
+  grid-column: 2;
+  grid-row: 1;
+  width: 100%;
+}
+
+.spectrogram-chart .live-spectrogram {
+  grid-column: 2;
+  grid-row: 1;
+}
+
+.spectrogram-legend {
+  grid-column: 3;
+  grid-row: 1;
+  display: flex;
+  gap: 0.35rem;
+}
+
+/* Same 5-stop magma-like gradient as audio/spectrogram.py's
+   _COLORMAP_STOPS, read top (loud, 0 dB) to bottom (quiet, -80 dB) to
+   match the spectrogram's own orientation. */
+.spectrogram-legend-bar {
+  width: 12px;
+  border-radius: 4px;
+  background: linear-gradient(
+    to top,
+    rgb(0, 0, 4) 0%,
+    rgb(81, 18, 124) 25%,
+    rgb(183, 55, 121) 50%,
+    rgb(252, 137, 97) 75%,
+    rgb(252, 253, 191) 100%
+  );
+}
+
+.spectrogram-legend-labels {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.spectrogram-time-axis {
+  grid-column: 2;
+  grid-row: 2;
+  display: flex;
+  justify-content: space-between;
+  font-size: 0.7rem;
+  color: var(--text-muted);
+}
+
+/* The recording modal floats over a dark backdrop regardless of the
+   page's own light/dark theme (see .image-modal's background) — its
+   axis/legend text needs to stay light-on-dark unconditionally, unlike
+   the live panel above which sits on the page's own background. */
+.recording-modal-content .spectrogram-freq-axis,
+.recording-modal-content .spectrogram-legend-labels,
+.recording-modal-content .spectrogram-time-axis {
+  color: rgba(255, 255, 255, 0.75);
+}
+
 .no-recording {
   color: var(--text-muted);
 }
@@ -640,6 +770,22 @@ td .scientific {
 .recording-modal-content audio {
   width: min(800px, 85vw);
   color-scheme: light dark;
+}
+
+.recording-modal-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: rgba(255, 255, 255, 0.85);
+  font-size: 0.85rem;
+}
+
+.recording-modal-controls select {
+  background: var(--surface);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 0.2rem 0.4rem;
 }
 
 /* Below tablet width, the 7-column species table stops being

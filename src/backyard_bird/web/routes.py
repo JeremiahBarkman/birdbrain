@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import shutil
 import socket
+import wave
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -21,6 +22,7 @@ from backyard_bird.audio.device_control import read_device_control, write_device
 from backyard_bird.audio.devices import list_input_devices
 from backyard_bird.audio.gain import GAIN_MAX, GAIN_MIN, read_gain_control, write_gain_control
 from backyard_bird.audio.levels import read_mic_status
+from backyard_bird.audio.spectrogram import render_spectrogram_bytes, wav_duration_and_rate
 from backyard_bird.audio.wav_stream import streaming_wav_header
 from backyard_bird.database.connection import get_connection
 from backyard_bird.database.repositories import (
@@ -35,6 +37,7 @@ from backyard_bird.database.repositories import (
     list_species_summary,
     reject_species_detections,
     set_best_recording_approved,
+    set_best_recording_highpass,
 )
 from backyard_bird.images.cache import species_slug
 
@@ -87,12 +90,22 @@ def _recording_json(scientific_name: str, best_recordings_by_name: dict) -> dict
     if row is None:
         return None
     slug = species_slug(scientific_name)
+
+    duration_seconds = sample_rate = None
+    try:
+        duration_seconds, sample_rate = wav_duration_and_rate(Path(row["clip_path"]))
+    except (OSError, wave.Error):
+        pass  # axis labels just won't render in the modal — never worth failing the whole row over
+
     return {
         "url": url_for("dashboard.species_clip", slug=slug),
         "download_url": url_for("dashboard.species_clip", slug=slug, download="1"),
         "spectrogram_url": _spectrogram_url(slug),
         "confidence": row["confidence"],
         "is_approved": bool(row["is_approved"]),
+        "duration_seconds": duration_seconds,
+        "sample_rate": sample_rate,
+        "highpass_hz": row["highpass_hz"],
     }
 
 
@@ -159,6 +172,18 @@ def species_clip(slug: str):
 @bp.route("/media/audio/<slug>/spectrogram.png")
 def species_spectrogram(slug: str):
     directory = Path(current_app.config["AUDIO_CLIPS_ROOT"]) / slug
+    highpass = request.args.get("highpass", type=float)
+    if highpass:
+        # A highpass preview is rendered on demand rather than cached
+        # as another file per cutoff — clips are short (a few seconds
+        # at most), so recomputing the STFT per request is cheap, and
+        # this is a display option a user is actively adjusting, not
+        # something worth accumulating variants of on disk for.
+        try:
+            png_bytes = render_spectrogram_bytes(directory / "clip.wav", highpass_hz=highpass)
+        except (OSError, ValueError, wave.Error):
+            return send_from_directory(directory, "spectrogram.png")  # fall back to the cached default
+        return Response(png_bytes, mimetype="image/png", headers={"Cache-Control": "no-store"})
     return send_from_directory(directory, "spectrogram.png")
 
 
@@ -238,6 +263,36 @@ def star_recording(scientific_name: str):
         conn.close()
 
     return jsonify({"scientific_name": scientific_name, "is_approved": approved})
+
+
+@bp.route("/api/species/<path:scientific_name>/recording/highpass", methods=["POST"])
+def set_recording_highpass(scientific_name: str):
+    """Persists the recording modal's high-pass filter selection (user
+    request, 2026-09-19) so reopening a species' recording later
+    remembers the setting instead of resetting to "Off" every time —
+    same per-species, one-row-per-species home (best_recordings) and
+    "client sends the desired end state" pattern as the star toggle
+    above.
+    """
+    payload = request.get_json(silent=True) or {}
+    try:
+        highpass_hz = float(payload.get("highpass_hz", 0))
+    except (TypeError, ValueError):
+        return jsonify({"error": "highpass_hz must be a number"}), 400
+
+    conn = _connect()
+    try:
+        species_id = get_species_id_by_scientific_name(conn, scientific_name)
+        if species_id is None:
+            return jsonify({"error": "unknown species"}), 404
+        with conn:
+            updated = set_best_recording_highpass(conn, species_id, highpass_hz)
+        if not updated:
+            return jsonify({"error": "no recording to set this on for this species"}), 404
+    finally:
+        conn.close()
+
+    return jsonify({"scientific_name": scientific_name, "highpass_hz": highpass_hz})
 
 
 @bp.route("/api/species/<path:scientific_name>/reject", methods=["POST"])

@@ -1,3 +1,4 @@
+import io
 import wave
 from pathlib import Path
 
@@ -5,7 +6,11 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from backyard_bird.audio.spectrogram import generate_spectrogram
+from backyard_bird.audio.spectrogram import (
+    generate_spectrogram,
+    render_spectrogram_bytes,
+    wav_duration_and_rate,
+)
 
 
 def _write_wav(
@@ -122,3 +127,63 @@ def test_generate_spectrogram_rejects_non_16_bit_pcm(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError):
         generate_spectrogram(source, dest)
+
+
+# -- render_spectrogram_bytes / highpass preview (user request) -------------
+
+
+def test_render_spectrogram_bytes_returns_a_valid_png(tmp_path: Path) -> None:
+    source = tmp_path / "clip.wav"
+    _write_wav(source)
+
+    png_bytes = render_spectrogram_bytes(source)
+
+    with Image.open(io.BytesIO(png_bytes)) as image:
+        image.verify()
+
+
+def test_render_spectrogram_bytes_matches_generate_spectrogram_with_no_highpass(tmp_path: Path) -> None:
+    source = tmp_path / "clip.wav"
+    _write_wav(source)
+    dest = tmp_path / "spectrogram.png"
+    generate_spectrogram(source, dest)
+
+    assert render_spectrogram_bytes(source) == dest.read_bytes()
+
+
+def test_highpass_zeroes_out_energy_below_the_cutoff(tmp_path: Path) -> None:
+    # A 2kHz tone (see _write_wav) has essentially all its energy in
+    # one narrow band. A highpass cutoff above that band should remove
+    # it (image goes dark); a cutoff below it should leave the tone's
+    # bright band intact.
+    source = tmp_path / "clip.wav"
+    _write_wav(source)
+
+    cutoff_below_tone = render_spectrogram_bytes(source, highpass_hz=100.0)
+    cutoff_above_tone = render_spectrogram_bytes(source, highpass_hz=10000.0)
+
+    below_pixels = np.array(Image.open(io.BytesIO(cutoff_below_tone)))
+    above_pixels = np.array(Image.open(io.BytesIO(cutoff_above_tone)))
+    # Cutting off everything above the tone removes its bright band
+    # entirely, so the image's total brightness drops substantially —
+    # and must not renormalize back up to look just as bright (the bug
+    # this test caught: computing `reference` after zeroing let a tiny
+    # leftover noise floor rescale to look as loud as the original).
+    assert above_pixels.sum() < below_pixels.sum() * 0.5
+
+
+def test_highpass_of_zero_behaves_like_no_highpass(tmp_path: Path) -> None:
+    source = tmp_path / "clip.wav"
+    _write_wav(source)
+
+    assert render_spectrogram_bytes(source, highpass_hz=0) == render_spectrogram_bytes(source, highpass_hz=None)
+
+
+def test_wav_duration_and_rate(tmp_path: Path) -> None:
+    source = tmp_path / "clip.wav"
+    _write_wav(source, seconds=3.0, sample_rate=48000)
+
+    duration, rate = wav_duration_and_rate(source)
+
+    assert duration == pytest.approx(3.0)
+    assert rate == 48000

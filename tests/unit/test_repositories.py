@@ -24,6 +24,7 @@ from backyard_bird.database.repositories import (
     reject_species_detections,
     reset_audio_segment_to_pending,
     set_best_recording_approved,
+    set_best_recording_highpass,
     upsert_best_recording,
 )
 
@@ -380,6 +381,45 @@ def test_set_best_recording_approved_can_unstar(conn: sqlite3.Connection) -> Non
     row = get_best_recordings_by_scientific_name(conn)["Poecile atricapillus"]
     assert row["is_approved"] == 0
     assert row["approved_at_utc"] is None
+
+
+def test_upsert_best_recording_defaults_highpass_to_off(conn: sqlite3.Connection) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.60)
+    with conn:
+        upsert_best_recording(conn, species_id, detection_id, 0.60, "clip.wav")
+
+    assert get_best_recordings_by_scientific_name(conn)["Poecile atricapillus"]["highpass_hz"] == 0
+
+
+def test_set_best_recording_highpass_persists(conn: sqlite3.Connection) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.60)
+    with conn:
+        upsert_best_recording(conn, species_id, detection_id, 0.60, "clip.wav")
+        assert set_best_recording_highpass(conn, species_id, 1000.0) is True
+
+    assert get_best_recordings_by_scientific_name(conn)["Poecile atricapillus"]["highpass_hz"] == 1000.0
+
+
+def test_set_best_recording_highpass_returns_false_when_nothing_to_set_it_on(
+    conn: sqlite3.Connection,
+) -> None:
+    species_id = get_or_create_species(conn, "Poecile atricapillus", "Black-capped Chickadee")
+    with conn:
+        assert set_best_recording_highpass(conn, species_id, 500.0) is False
+
+
+def test_upsert_best_recording_resets_highpass_on_replacement(conn: sqlite3.Connection) -> None:
+    species_id, first_detection_id = _insert_species_and_detection(conn, 0.60, "incoming/a.wav")
+    with conn:
+        upsert_best_recording(conn, species_id, first_detection_id, 0.60, "clip.wav")
+        set_best_recording_highpass(conn, species_id, 1500.0)
+    assert get_best_recordings_by_scientific_name(conn)["Poecile atricapillus"]["highpass_hz"] == 1500.0
+
+    _, second_detection_id = _insert_species_and_detection(conn, 0.90, "incoming/b.wav")
+    with conn:
+        upsert_best_recording(conn, species_id, second_detection_id, 0.90, "clip.wav")
+
+    assert get_best_recordings_by_scientific_name(conn)["Poecile atricapillus"]["highpass_hz"] == 0
 
 
 def test_get_species_id_by_scientific_name(conn: sqlite3.Connection) -> None:

@@ -577,24 +577,25 @@ def upsert_best_recording(
 ) -> None:
     """Unconditional — callers are expected to have already checked
     get_best_recording_confidence() and only call this when
-    `confidence` beats it (or nothing exists yet). is_approved always
-    resets to unstarred: clip_path now points at a different physical
-    recording than whatever was starred before, and that recording
-    hasn't been heard yet.
+    `confidence` beats it (or nothing exists yet). is_approved and
+    highpass_hz both reset to their off state: clip_path now points at
+    a different physical recording than whatever was starred/filtered
+    before, and that recording hasn't been reviewed at any setting yet.
     """
     now = _now_iso()
     conn.execute(
         """
         INSERT INTO best_recordings (
             species_id, detection_id, confidence, clip_path,
-            is_approved, approved_at_utc, created_at_utc, updated_at_utc
-        ) VALUES (?, ?, ?, ?, 0, NULL, ?, ?)
+            is_approved, approved_at_utc, highpass_hz, created_at_utc, updated_at_utc
+        ) VALUES (?, ?, ?, ?, 0, NULL, 0, ?, ?)
         ON CONFLICT(species_id) DO UPDATE SET
             detection_id = excluded.detection_id,
             confidence = excluded.confidence,
             clip_path = excluded.clip_path,
             is_approved = 0,
             approved_at_utc = NULL,
+            highpass_hz = 0,
             updated_at_utc = excluded.updated_at_utc
         """,
         (species_id, detection_id, confidence, str(clip_path), now, now),
@@ -608,6 +609,19 @@ def set_best_recording_approved(conn: sqlite3.Connection, species_id: int, appro
     cursor = conn.execute(
         "UPDATE best_recordings SET is_approved = ?, approved_at_utc = ? WHERE species_id = ?",
         (int(approved), _now_iso() if approved else None, species_id),
+    )
+    return cursor.rowcount > 0
+
+
+def set_best_recording_highpass(conn: sqlite3.Connection, species_id: int, highpass_hz: float) -> bool:
+    """The recording modal's high-pass filter selection (user request,
+    2026-09-19), persisted per species alongside is_approved. Returns
+    False if this species has no best recording yet — same "nothing to
+    set this on" semantics as set_best_recording_approved above.
+    """
+    cursor = conn.execute(
+        "UPDATE best_recordings SET highpass_hz = ? WHERE species_id = ?",
+        (highpass_hz, species_id),
     )
     return cursor.rowcount > 0
 
