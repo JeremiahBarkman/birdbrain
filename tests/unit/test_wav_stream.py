@@ -43,3 +43,18 @@ def test_header_reflects_stereo_and_different_sample_rate() -> None:
     with wave.open(buffer, "rb") as wav_file:
         assert wav_file.getframerate() == 44100
         assert wav_file.getnchannels() == 2
+
+
+def test_riff_and_data_sizes_use_the_signed_max_placeholder_not_unsigned_max() -> None:
+    # Regression test: 0xFFFFFFFF (unsigned max) made Safari reject the
+    # live stream outright with NotSupportedError the instant .play()
+    # was called (confirmed live by a real tester, 2026-09-19) — read
+    # as a signed 32-bit size by some media pipelines, it's -1, an
+    # already-invalid value. 0x7FFFFFFF (signed max) is unambiguous
+    # either way signedness is read, and played fine on Safari,
+    # Chrome, and Firefox alike.
+    header = streaming_wav_header(48000, 1)
+    riff_size = int.from_bytes(header[4:8], "little")
+    data_size = int.from_bytes(header[40:44], "little")
+    assert riff_size == 0x7FFFFFFF
+    assert data_size == 0x7FFFFFFF

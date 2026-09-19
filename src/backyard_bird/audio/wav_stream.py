@@ -6,16 +6,30 @@ count up front (or a seekable file to patch the header on close),
 neither of which is available for an HTTP response that just keeps
 sending bytes for as long as someone's listening. The standard
 workaround — used here — is to write an ordinary 44-byte PCM WAV
-header with the RIFF and data chunk sizes set to the maximum
-representable value (0xFFFFFFFF) instead of a real byte count. Most
-players, browsers included, treat that as "keep playing until the
-stream itself ends" rather than erroring on the mismatch.
+header with the RIFF and data chunk sizes set to a placeholder instead
+of a real byte count. Most players, browsers included, treat that as
+"keep playing until the stream itself ends" rather than erroring on
+the mismatch.
+
+That placeholder is 0x7FFFFFFF (2^31 - 1, the max *signed* 32-bit
+value), not the more obvious 0xFFFFFFFF (the max *unsigned* value) —
+confirmed live with a real tester on Safari/macOS, 2026-09-19: Safari
+rejected the stream outright with `NotSupportedError` the instant
+`.play()` was called, before any audio data even arrived, while
+Chrome/Firefox played it fine either way. 0xFFFFFFFF, read as a signed
+32-bit chunk size (which some parsers' internal size fields are, even
+though the WAV spec itself defines them as unsigned), is -1 — an
+already-invalid, already-suspicious value some media pipelines refuse
+outright rather than tolerate. 0x7FFFFFFF is unambiguous either way
+signedness is read, and is the placeholder other streaming-WAV servers
+(e.g. Icecast/Shoutcast WAV relays) commonly settle on for exactly
+this cross-player compatibility reason.
 """
 from __future__ import annotations
 
 import struct
 
-_UNKNOWN_LENGTH = 0xFFFFFFFF
+_UNKNOWN_LENGTH = 0x7FFFFFFF
 _PCM_FORMAT = 1  # WAVE_FORMAT_PCM
 
 
