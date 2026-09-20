@@ -31,9 +31,11 @@ Raspberry Pi 4B, both with a real USB microphone:
 - Automatic bird-photo acquisition and caching (Wikimedia Commons,
   iNaturalist), plus a saved "best recording" audio clip per species.
 - A live status dashboard (`bird-display dashboard run`): detection
-  stats, a per-species table with photo/audio/reject/delete controls,
-  and a live microphone level meter with a real-time "Listen Live"
-  audio button.
+  stats, a per-species table with photo/audio/reject/delete controls, a
+  live microphone level meter with adjustable gain and device
+  selection, a real-time "Listen Live" audio button with its own
+  spectrogram, and per-species spectrograms with a high-pass filter
+  (see screenshots above).
 - `bird-display setup` — an interactive wizard for location (geocoded
   from a city/state/ZIP) and microphone selection.
 - `bird-display services install` — boot-time auto-start via systemd
@@ -44,10 +46,14 @@ Raspberry Pi 4B, both with a real USB microphone:
   (aarch64, e.g. a Raspberry Pi 4B), with the right BirdNET backend
   (`tensorflow` vs. the much lighter `tflite-runtime`) picked
   automatically per platform.
+- A photo-frame delivery adapter package (`bird-display frame test`/
+  `frame inspect`) with a working `local_export` adapter — the
+  guaranteed manual-transfer fallback (§17.5), usable standalone ahead
+  of the slideshow builder below.
 
 Not yet built: daily species aggregation, the daily slideshow builder,
-and the Euphro WF1561 photo-frame delivery adapter (§29 Phases 5–7 of
-the requirements doc).
+and delivering that slideshow to the Euphro WF1561 automatically (§29
+Phases 5 and 7 of the requirements doc).
 
 See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the full phase-by-phase
 history — every real bug found (many only surfaced by actually running

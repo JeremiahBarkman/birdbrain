@@ -1058,3 +1058,62 @@ species, where `AVG` and `MAX` are indistinguishable by construction.
 Added a case with two surviving detections in one group specifically
 to make that distinction visible going forward.
 
+### Frame adapter package (§29 Phase 6, 2026-09-20)
+
+The physical WF1561's firmware inventory (§31.3) was collected from
+its Settings screen: Android 8.1 on a Rockchip RK3326 SoC, "Uhale"
+firmware. Confirms this is one of many white-label frames running the
+same Uhale platform under different branding — a real, non-obscure
+ecosystem, though no public/documented Uhale API has been confirmed
+for this project (§30 rule 24 still applies: don't assume one exists).
+Serial number, MAC addresses, and Terminal ID were also on that
+screen; none of that is recorded anywhere in the repo (§23.4).
+
+Before this, `frame/` didn't exist as a package at all — not even the
+`PhotoFrameAdapter` interface §17.4 already specifies. Built the whole
+thing standalone from the slideshow builder (§29 Phase 5, still not
+built): `frame/manifest.py` defines `SlideshowManifest`/
+`SlideshowManifestItem` — the shape `publish_slideshow()` already
+commits to taking per §17.4, invented now so the adapter package isn't
+blocked on Phase 5 landing first, with a docstring flagging that Phase
+5 should either produce exactly this shape or this module gets
+revisited alongside it.
+
+`frame/base.py`: the `PhotoFrameAdapter` ABC plus its four result
+dataclasses, straight out of §17.4. `frame/adapters/unconfigured.py`:
+the safe default when `photo_frame.adapter` is unset or unrecognized —
+every method returns a failure result rather than raising, so a typo
+in config.yaml shows up in `frame test`/`frame inspect` output instead
+of crashing whatever calls it later (a delivery scheduler doesn't
+exist yet either, but §20.1's "frame failure must never interrupt
+detection" is the same principle). `frame/adapters/local_export.py`:
+the one adapter that must always work (§30 rule 29) — copies a
+rendered slideshow directory into `data/frame-export/current/` plus
+`manifest.json`/`README.txt`, using the same "build alongside in a
+`.building` sibling, then swap into place" pattern as §8.4's segment
+files and the spectrogram PNGs, except a directory can't be replaced
+in one atomic syscall the way a file can, so it's two renames (old ->
+`.previous`, new -> current) instead of one. `frame/service.py`:
+picks the adapter from `photo_frame.adapter`, same registry-lookup
+shape as `cli.py`'s `_build_image_providers()`.
+
+Wired up `bird-display frame test`/`frame inspect` (§25 — both were
+listed as required CLI commands from the start, just never
+implemented). Verified live against the real repo's config: `frame
+test` reports the export directory writable, `frame inspect` reports
+"No export yet" (correct — nothing has ever called
+`publish_slideshow()` outside tests), and no stray files were left
+behind by the write-probe.
+
+20 new tests (manifest shape, both adapters including the two-rename
+swap actually replacing old content, the registry, and the CLI
+commands through a real invocation) — all against synthetic slideshow
+directories, since no real slideshow builder exists yet to generate
+one from actual detections.
+
+**What's still not done:** Uhale Web workflow verification (no
+browser-pairing option confirmed present in this unit's Settings yet),
+external-media import verification on the physical unit, and anything
+that actually calls `publish_slideshow()` outside a test — that needs
+the Phase 5 slideshow builder first.
+

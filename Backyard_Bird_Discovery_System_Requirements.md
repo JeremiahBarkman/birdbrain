@@ -1803,17 +1803,45 @@ Exit condition:
 
 Deliverables:
 
-- Physical-frame firmware inventory
-- Uhale Web workflow verification
-- External-media import verification
-- Adapter decision record
-- Initial delivery adapter
-- Manual fallback export
-- Delivery logging
+- Physical-frame firmware inventory — **done, 2026-09-20**: Model
+  WF1561, Android 8.1, Rockchip RK3326 SoC, "Uhale" firmware (build
+  `RK3326_8.1_RM_AIC8800_ZXV4.2.0`, FSTR 5.1.5). Serial number, MAC
+  addresses, and Terminal ID were also read from the device's Settings
+  screen but are deliberately not recorded here or anywhere else in
+  the repo (§23.4/§30 rule 28).
+- Uhale Web workflow verification — not yet done; no "Uhale Web" /
+  browser-pairing option has been confirmed present in this unit's
+  Settings menu yet.
+- External-media import verification — not yet done on the physical
+  unit.
+- Adapter decision record — **partially done, 2026-09-20**: the
+  `PhotoFrameAdapter` interface (§17.4) and its adapter registry now
+  exist in code (`src/backyard_bird/frame/`), with `local_export`
+  implemented and `unconfigured` as the safe default for anything else
+  (including a future `uhale_web`, not yet implemented — the project
+  still has no confirmed public/documented Uhale API, per §30 rule 24).
+- Initial delivery adapter — **done, 2026-09-20**: `LocalExportAdapter`
+  (§17.5), independent of the not-yet-built slideshow generator
+  (§29 Phase 5) — it takes a rendered slide directory + manifest and
+  packages them, so it's already testable and already the guaranteed
+  fallback rule 29 requires.
+- Manual fallback export — **done, 2026-09-20**: this *is* the manual
+  fallback export (`local_export` writes `data/frame-export/current/`
+  with the slides, `manifest.json`, and `README.txt` per §17.5).
+- Delivery logging — not yet done (depends on a delivery scheduler,
+  §29 Phase 7, that doesn't exist yet to log from).
+
+See DEVELOPMENT.md's dated implementation note for how the adapter
+package was built and what testing covers it.
 
 Exit condition:
 
 > A generated slideshow can be transferred reproducibly to the WF1561.
+
+Not yet met — the slideshow builder (§29 Phase 5) that would produce a
+real `SlideshowManifest` for `LocalExportAdapter.publish_slideshow()`
+to act on doesn't exist yet, so this has only been exercised against
+synthetic test fixtures, not a real daily slideshow.
 
 ### Phase 7: Unattended Delivery
 

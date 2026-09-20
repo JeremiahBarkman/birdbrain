@@ -8,10 +8,16 @@ image acquisition, the live status dashboard, `services` (install/
 uninstall/status — systemd on Linux, launchd on macOS, §29 Phase 8,
 added 2026-09-14), `doctor` (checks only — network access, frame
 configuration, and image-provider configuration aren't covered yet),
-and `setup` (an interactive first-run wizard for location and
-microphone selection — not in the original §25 list, added 2026-09-14
-once a public/friendlier install became a real goal; see README).
-Not yet built: slideshow/frame commands (Phase 6+).
+`setup` (an interactive first-run wizard for location and microphone
+selection — not in the original §25 list, added 2026-09-14 once a
+public/friendlier install became a real goal; see README), and `frame
+inspect`/`frame test` (§29 Phase 6, added 2026-09-20 — the adapter
+package exists and local_export works standalone; the slideshow
+builder that produces a real SlideshowManifest for it is still Phase
+5, not built).
+Not yet built: the slideshow builder (Phase 5) and a scheduled
+frame-delivery job that calls publish_slideshow() automatically
+(Phase 7).
 """
 from __future__ import annotations
 
@@ -718,6 +724,43 @@ def recordings_backfill_spectrograms(ctx: click.Context) -> None:
         click.echo(f"  {scientific_name}: OK")
 
     click.echo(f"Backfilled {succeeded}/{len(best_recordings)} spectrograms.")
+
+
+@cli.group()
+def frame() -> None:
+    """Photo-frame delivery commands (§17, §29 Phase 6)."""
+
+
+@frame.command("test")
+@click.pass_context
+def frame_test(ctx: click.Context) -> None:
+    """Test the configured delivery adapter's connection (§25)."""
+    from backyard_bird.frame.service import build_frame_adapter
+
+    config_path: Path = ctx.obj["config_path"]
+    app_config = _load_config_or_exit(config_path)
+
+    adapter = build_frame_adapter(app_config.photo_frame)
+    result = adapter.test_connection()
+    click.echo(f"[{_STATUS_MARKERS['pass'] if result.ok else _STATUS_MARKERS['fail']}] {result.message}")
+    if not result.ok:
+        sys.exit(1)
+
+
+@frame.command("inspect")
+@click.pass_context
+def frame_inspect(ctx: click.Context) -> None:
+    """Show the configured delivery adapter's current status (§25)."""
+    from backyard_bird.frame.service import build_frame_adapter
+
+    config_path: Path = ctx.obj["config_path"]
+    app_config = _load_config_or_exit(config_path)
+
+    adapter = build_frame_adapter(app_config.photo_frame)
+    status = adapter.get_status()
+    click.echo(f"Adapter: {status.adapter_name}")
+    click.echo(f"Configured: {'yes' if status.configured else 'no'}")
+    click.echo(status.detail)
 
 
 _STATUS_MARKERS = {"pass": "OK  ", "warn": "WARN", "fail": "FAIL"}
