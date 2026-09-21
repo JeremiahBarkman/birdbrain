@@ -363,12 +363,20 @@ def reject_species_detections(conn: sqlite3.Connection, species_id: int) -> int:
 
 def delete_species_detections(conn: sqlite3.Connection, species_id: int) -> dict[str, object]:
     """Irreversible — callers must have already confirmed with the
-    user before calling this. best_recordings is deleted first
-    specifically because its detection_id FK references a row this
-    function is about to delete; deleting child-before-parent here
-    (rather than relying on any ON DELETE CASCADE, which this schema
-    doesn't declare) is what keeps this safe under the FK enforcement
-    §11 requires (PRAGMA foreign_keys = ON).
+    user before calling this. best_recordings and daily_species_summary
+    are deleted first specifically because their detection_id/
+    representative_detection_id FKs reference rows this function is
+    about to delete; deleting child-before-parent here (rather than
+    relying on any ON DELETE CASCADE, which this schema doesn't
+    declare) is what keeps this safe under the FK enforcement §11
+    requires (PRAGMA foreign_keys = ON).
+
+    daily_species_summary (§12.5, migration 005) is a derived cache
+    rebuilt from detections on the next aggregation run regardless
+    (aggregation.service.aggregate_local_date()), so deleting its rows
+    for this species loses nothing that isn't about to be stale
+    anyway — unlike best_recordings' clip_path, there's no file to
+    return or clean up on the caller's behalf here.
 
     Returns {"detections_deleted": int, "clip_path": str | None} —
     the clip file itself isn't touched here (this module never touches
@@ -381,6 +389,7 @@ def delete_species_detections(conn: sqlite3.Connection, species_id: int) -> dict
     clip_path = clip_row["clip_path"] if clip_row is not None else None
 
     conn.execute("DELETE FROM best_recordings WHERE species_id = ?", (species_id,))
+    conn.execute("DELETE FROM daily_species_summary WHERE species_id = ?", (species_id,))
     cursor = conn.execute("DELETE FROM detections WHERE species_id = ?", (species_id,))
     return {"detections_deleted": cursor.rowcount, "clip_path": clip_path}
 

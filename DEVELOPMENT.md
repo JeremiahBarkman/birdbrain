@@ -1593,3 +1593,38 @@ names like `save-sd-btn` and code comments referring to "the 'Save to
 SD' button" as a feature name were left alone, since only the visible
 label was asked to change). Full suite (384 tests) passes.
 
+### Bug: dashboard's delete-species button broken by migration 005 (2026-09-21)
+
+User report: "delete record button is broken. Likely because some
+other process is holding the record." Reproduced directly (in-memory
+DB, no dashboard involved) rather than guessing from the symptom —
+the actual failure is `sqlite3.IntegrityError: FOREIGN KEY constraint
+failed`, not a lock: `daily_species_summary.representative_detection_id`
+(§12.5, added by migration 005 alongside the aggregation job) is a
+child FK on `detections(id)`, exactly like `best_recordings.
+detection_id` already was — but `delete_species_detections()`
+(`repositories.py`) was written before `daily_species_summary`
+existed and only ever knew to delete `best_recordings` first. Once a
+species had a summary row (e.g. from qualifying for a "Save Slides"
+build — which the user had just been testing, so this was live on the
+real database for any recently-detected species), hitting delete on
+it failed the FK check instead of the intended cascade-by-hand
+`best_recordings` → `detections` order.
+
+Fix: also `DELETE FROM daily_species_summary WHERE species_id = ?`
+before deleting `detections`, same child-before-parent shape as the
+existing `best_recordings` delete right next to it. No file/clip to
+clean up for this one — daily_species_summary is a derived cache
+`aggregate_local_date()` rebuilds from scratch on its next run anyway
+(same reasoning as its own idempotency), so losing a row here loses
+nothing that wasn't already about to be recomputed. Checked
+`slideshow_items` for the same class of problem: its FKs point at
+`species(id)`/`bird_images(id)`, neither of which this function
+deletes, so no issue there.
+
+One new regression test (`test_delete_species_detections_does_not_
+violate_daily_species_summary_fk`) — aggregates a seeded detection
+into `daily_species_summary` first, same as would happen from a real
+"Save Slides" click, then deletes and asserts it succeeds and the
+summary row is gone too. Full suite (385 tests) passes.
+

@@ -4,6 +4,7 @@ from pathlib import Path
 
 import pytest
 
+from backyard_bird.aggregation.service import aggregate_local_date
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
     delete_daily_species_summary_species_not_in,
@@ -628,6 +629,28 @@ def test_delete_species_detections_for_unknown_species_is_a_no_op(conn: sqlite3.
     with conn:
         result = delete_species_detections(conn, 999)
     assert result == {"detections_deleted": 0, "clip_path": None}
+
+
+def test_delete_species_detections_does_not_violate_daily_species_summary_fk(conn: sqlite3.Connection) -> None:
+    """Regression test: daily_species_summary.representative_detection_id
+    (§12.5, migration 005) references detections(id) the same way
+    best_recordings.detection_id does. Deleting a species that already
+    has a summary row (e.g. one that qualified for today's slideshow)
+    used to raise sqlite3.IntegrityError — the dashboard's delete
+    button would fail, looking like a locked/busy database but
+    actually this — because this function deleted best_recordings
+    first but never touched daily_species_summary.
+    """
+    species_id, _ = _insert_species_and_detection(conn, 0.90)  # detected 2026-08-17T06:00:00Z
+    with conn:
+        aggregate_local_date(conn, "2026-08-17", "UTC")
+    assert conn.execute("SELECT COUNT(*) AS c FROM daily_species_summary").fetchone()["c"] == 1
+
+    with conn:
+        result = delete_species_detections(conn, species_id)
+
+    assert result["detections_deleted"] == 1
+    assert conn.execute("SELECT COUNT(*) AS c FROM daily_species_summary").fetchone()["c"] == 0
 
 
 # -- slideshows / slideshow_items (§12.7/12.8) --------------------------------
