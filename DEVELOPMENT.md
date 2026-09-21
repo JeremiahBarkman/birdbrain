@@ -1628,3 +1628,39 @@ into `daily_species_summary` first, same as would happen from a real
 "Save Slides" click, then deletes and asserts it succeeds and the
 summary row is gone too. Full suite (385 tests) passes.
 
+### Bug: Min. confidence filter didn't survive a reload (2026-09-21)
+
+User report: the species-table confidence slider reset to its default
+(45%) on every page reload instead of staying at whatever the viewer
+last set it to. Root cause was simple — `minConfidencePercent`
+(`dashboard.js`) was a plain in-memory variable, initialized from the
+slider's own HTML `value="45"` on every fresh page load, with no
+persistence at all; nothing had ever written it anywhere durable.
+
+Fixed with `localStorage` (`birdbrain.minConfidencePercent`) — the
+standard fit for a per-browser UI preference that shouldn't touch the
+server or any account. `loadStoredMinConfidencePercent()` seeds the
+slider on load, bounds-checked against the slider's own current
+min/max rather than trusted outright (a value stored before either
+bound changes, or corrupted storage, falls back to the default rather
+than silently applying an out-of-range filter). Both the slider's
+`input` handler and "Clear filters" now write through
+`storeMinConfidencePercent()` — clearing filters resets the stored
+value too, not just the on-screen one. Both storage calls are wrapped
+in try/catch: losing the remembered value is fine (private browsing,
+blocked site data), breaking the filter itself over a storage error
+is not. The date filter was deliberately left unpersisted — the user
+only reported the confidence slider, and a stale date filter carried
+into a new day would read as "no results" rather than as a helpful
+memory.
+
+No Python test suite covers this (this project has no JS test
+tooling, and dashboard.js has never had automated tests — consistent
+with existing convention, not a gap introduced here); verified instead
+by extracting the actual persistence functions into a standalone Node
+script against a mock `localStorage` and checking four cases: first
+load with nothing stored, a value surviving a simulated reload, an
+out-of-range stored value falling back to default, and "Clear filters"
+resetting the stored value too. Full Python suite (385 tests, none of
+which touch this) still passes.
+

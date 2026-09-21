@@ -29,10 +29,44 @@ const todayFilterBtn = document.getElementById("today-filter-btn");
 const clearFiltersBtn = document.getElementById("clear-filters-btn");
 
 const DEFAULT_MIN_CONFIDENCE_PERCENT = Number(confidenceFilterEl.value); // 45 — the slider's own floor
+// Remembered per-browser (user request: it was resetting on every
+// reload) via localStorage — deliberately not sent to the server or
+// tied to any account, just this one browser's last-used setting.
+// Wrapped in try/catch: storage can throw (private browsing, blocked
+// site data), and losing the remembered value is fine, but it must
+// never break the filter itself.
+const MIN_CONFIDENCE_STORAGE_KEY = "birdbrain.minConfidencePercent";
+
+function loadStoredMinConfidencePercent() {
+  try {
+    const stored = Number(localStorage.getItem(MIN_CONFIDENCE_STORAGE_KEY));
+    // Bounds-checked against the slider's own current min/max rather
+    // than trusted outright — a value stored before either bound
+    // changed (or corrupted storage) must not silently apply an
+    // out-of-range filter.
+    if (Number.isFinite(stored) && stored >= Number(confidenceFilterEl.min) && stored <= Number(confidenceFilterEl.max)) {
+      return stored;
+    }
+  } catch {
+    // ignore — fall through to the default
+  }
+  return DEFAULT_MIN_CONFIDENCE_PERCENT;
+}
+
+function storeMinConfidencePercent(value) {
+  try {
+    localStorage.setItem(MIN_CONFIDENCE_STORAGE_KEY, String(value));
+  } catch {
+    // ignore — this is a convenience, not something to fail the filter over
+  }
+}
+
 // Filter state driving every poll(). Module-level, same reasoning as
 // visibleSpeciesCount: it must survive the 5s auto-refresh, not reset
 // on every tick.
-let minConfidencePercent = DEFAULT_MIN_CONFIDENCE_PERCENT;
+let minConfidencePercent = loadStoredMinConfidencePercent();
+confidenceFilterEl.value = String(minConfidencePercent);
+confidenceValueEl.textContent = `${minConfidencePercent}%`;
 let filterDate = ""; // "" = all time; else an input[type=date] YYYY-MM-DD string
 
 function filtersActive() {
@@ -55,6 +89,7 @@ function applyFilters() {
 confidenceFilterEl.addEventListener("input", () => {
   minConfidencePercent = Number(confidenceFilterEl.value);
   confidenceValueEl.textContent = `${minConfidencePercent}%`;
+  storeMinConfidencePercent(minConfidencePercent);
   applyFilters();
 });
 
@@ -76,6 +111,7 @@ clearFiltersBtn.addEventListener("click", () => {
   minConfidencePercent = DEFAULT_MIN_CONFIDENCE_PERCENT;
   confidenceFilterEl.value = String(DEFAULT_MIN_CONFIDENCE_PERCENT);
   confidenceValueEl.textContent = `${DEFAULT_MIN_CONFIDENCE_PERCENT}%`;
+  storeMinConfidencePercent(DEFAULT_MIN_CONFIDENCE_PERCENT);
   filterDate = "";
   dateFilterEl.value = "";
   applyFilters();
