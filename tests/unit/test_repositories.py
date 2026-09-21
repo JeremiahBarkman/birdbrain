@@ -6,26 +6,33 @@ import pytest
 
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
+    delete_daily_species_summary_species_not_in,
     delete_species_detections,
     find_audio_segment_by_file_path,
     get_best_recording_confidence,
     get_best_recordings_by_scientific_name,
+    get_daily_species_summary,
     get_or_create_species,
     get_recent_detections_for_species,
+    get_slideshow_by_date,
     get_species_id_by_scientific_name,
     insert_audio_segment,
     insert_bird_image,
     insert_detection,
+    list_daily_detection_aggregates,
     list_detections,
     list_species_needing_image_search,
     list_species_summary,
     mark_audio_segment_completed,
     mark_audio_segment_failed,
     reject_species_detections,
+    replace_slideshow_items,
     reset_audio_segment_to_pending,
     set_best_recording_approved,
     set_best_recording_highpass,
     upsert_best_recording,
+    upsert_daily_species_summary,
+    upsert_slideshow,
 )
 
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
@@ -477,6 +484,120 @@ def test_reject_species_detections_returns_zero_for_unknown_species(conn: sqlite
         assert reject_species_detections(conn, 999) == 0
 
 
+# -- daily_species_summary (§12.5) --------------------------------------------
+
+
+def test_list_daily_detection_aggregates_groups_per_species_and_picks_highest_confidence(
+    conn: sqlite3.Connection,
+) -> None:
+    chickadee_id = get_or_create_species(conn, "Poecile atricapillus", "Black-capped Chickadee")
+    robin_id = get_or_create_species(conn, "Turdus migratorius", "American Robin")
+    segment_id = _insert_segment(conn)
+    with conn:
+        insert_detection(
+            conn, segment_id, chickadee_id,
+            datetime(2026, 8, 17, 6, 0, 0, tzinfo=timezone.utc), 0.0, 3.0, 0.65, 1.0, None, None, False, None,
+        )
+        best_detection_id = insert_detection(
+            conn, segment_id, chickadee_id,
+            datetime(2026, 8, 17, 7, 30, 0, tzinfo=timezone.utc), 0.0, 3.0, 0.92, 1.0, None, None, False, None,
+        )
+        insert_detection(
+            conn, segment_id, robin_id,
+            datetime(2026, 8, 17, 8, 0, 0, tzinfo=timezone.utc), 0.0, 3.0, 0.80, 1.0, None, None, False, None,
+        )
+        # Outside the range and should be excluded.
+        insert_detection(
+            conn, segment_id, robin_id,
+            datetime(2026, 8, 18, 1, 0, 0, tzinfo=timezone.utc), 0.0, 3.0, 0.99, 1.0, None, None, False, None,
+        )
+
+    start = datetime(2026, 8, 17, 0, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 18, 0, 0, 0, tzinfo=timezone.utc)
+    aggregates = {a.species_id: a for a in list_daily_detection_aggregates(conn, start, end)}
+
+    assert set(aggregates) == {chickadee_id, robin_id}
+    chickadee = aggregates[chickadee_id]
+    assert chickadee.detection_count == 2
+    assert chickadee.highest_confidence == 0.92
+    assert chickadee.representative_detection_id == best_detection_id
+    assert chickadee.first_detected_at_utc == "2026-08-17T06:00:00+00:00"
+    assert chickadee.last_detected_at_utc == "2026-08-17T07:30:00+00:00"
+    assert aggregates[robin_id].detection_count == 1
+
+
+def test_list_daily_detection_aggregates_excludes_duplicates_and_rejected(conn: sqlite3.Connection) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.70)
+    with conn:
+        conn.execute(
+            "INSERT INTO detections (audio_segment_id, species_id, detected_at_utc, "
+            "segment_offset_start_seconds, segment_offset_end_seconds, confidence, is_duplicate, created_at_utc) "
+            "VALUES (?, ?, ?, 0, 3, 0.99, 1, ?)",
+            (
+                _insert_segment(conn, "incoming/dup.wav"),
+                species_id,
+                "2026-08-17T09:00:00+00:00",
+                "2026-08-17T09:00:00+00:00",
+            ),
+        )
+        reject_species_detections(conn, species_id)
+
+    start = datetime(2026, 8, 17, 0, 0, 0, tzinfo=timezone.utc)
+    end = datetime(2026, 8, 18, 0, 0, 0, tzinfo=timezone.utc)
+    assert list_daily_detection_aggregates(conn, start, end) == []
+    assert detection_id  # sanity: the rejected detection did exist
+
+
+def test_upsert_daily_species_summary_is_idempotent_and_overwrites(conn: sqlite3.Connection) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.70)
+    with conn:
+        upsert_daily_species_summary(
+            conn, "2026-08-17", species_id, "2026-08-17T06:00:00+00:00", "2026-08-17T06:00:00+00:00", 1, 0.70,
+            detection_id,
+        )
+        upsert_daily_species_summary(
+            conn, "2026-08-17", species_id, "2026-08-17T06:00:00+00:00", "2026-08-17T09:00:00+00:00", 3, 0.95,
+            detection_id,
+        )
+
+    rows = get_daily_species_summary(conn, "2026-08-17")
+    assert len(rows) == 1
+    assert rows[0]["detection_count"] == 3
+    assert rows[0]["highest_confidence"] == 0.95
+    assert rows[0]["scientific_name"] == "Poecile atricapillus"
+
+
+def test_delete_daily_species_summary_species_not_in_prunes_stale_rows(conn: sqlite3.Connection) -> None:
+    chickadee_id, chickadee_detection_id = _insert_species_and_detection(conn, 0.70)
+    robin_id = get_or_create_species(conn, "Turdus migratorius", "American Robin")
+    with conn:
+        upsert_daily_species_summary(
+            conn, "2026-08-17", chickadee_id, "2026-08-17T06:00:00+00:00", "2026-08-17T06:00:00+00:00", 1, 0.70,
+            chickadee_detection_id,
+        )
+        upsert_daily_species_summary(
+            conn, "2026-08-17", robin_id, "2026-08-17T07:00:00+00:00", "2026-08-17T07:00:00+00:00", 1, 0.80, None,
+        )
+        delete_daily_species_summary_species_not_in(conn, "2026-08-17", [chickadee_id])
+
+    rows = get_daily_species_summary(conn, "2026-08-17")
+    assert [r["species_id"] for r in rows] == [chickadee_id]
+
+
+def test_delete_daily_species_summary_species_not_in_with_empty_keep_list_clears_date(
+    conn: sqlite3.Connection,
+) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.70)
+    with conn:
+        upsert_daily_species_summary(
+            conn, "2026-08-17", species_id, "2026-08-17T06:00:00+00:00", "2026-08-17T06:00:00+00:00", 1, 0.70,
+            detection_id,
+        )
+        delete_daily_species_summary_species_not_in(conn, "2026-08-17", [])
+
+    assert get_daily_species_summary(conn, "2026-08-17") == []
+
+
 def test_delete_species_detections_removes_detections_and_best_recording(conn: sqlite3.Connection) -> None:
     species_id, detection_id = _insert_species_and_detection(conn, 0.60)
     with conn:
@@ -507,3 +628,63 @@ def test_delete_species_detections_for_unknown_species_is_a_no_op(conn: sqlite3.
     with conn:
         result = delete_species_detections(conn, 999)
     assert result == {"detections_deleted": 0, "clip_path": None}
+
+
+# -- slideshows / slideshow_items (§12.7/12.8) --------------------------------
+
+
+def test_upsert_slideshow_is_idempotent_and_overwrites(conn: sqlite3.Connection) -> None:
+    with conn:
+        first_id = upsert_slideshow(
+            conn, "2026-08-17", "generated", "/tmp/slideshows/2026-08-17", "/tmp/slideshows/2026-08-17/manifest.json",
+            1, 1, "2026-08-17T12:00:00+00:00",
+        )
+        second_id = upsert_slideshow(
+            conn, "2026-08-17", "generated", "/tmp/slideshows/2026-08-17", "/tmp/slideshows/2026-08-17/manifest.json",
+            3, 3, "2026-08-17T18:00:00+00:00",
+        )
+
+    assert first_id == second_id
+    row = get_slideshow_by_date(conn, "2026-08-17")
+    assert row["species_count"] == 3
+    assert row["generated_at_utc"] == "2026-08-17T18:00:00+00:00"
+    assert conn.execute("SELECT COUNT(*) AS c FROM slideshows").fetchone()["c"] == 1
+
+
+def test_get_slideshow_by_date_returns_none_when_unbuilt(conn: sqlite3.Connection) -> None:
+    assert get_slideshow_by_date(conn, "2026-01-01") is None
+
+
+def test_replace_slideshow_items_replaces_rather_than_accumulates(conn: sqlite3.Connection) -> None:
+    species_id, detection_id = _insert_species_and_detection(conn, 0.90)
+    with conn:
+        image_id = insert_bird_image(
+            conn, species_id=species_id, source_provider="wikimedia_commons",
+            original_image_url="https://example.com/x.jpg", status="approved", local_file_path="/tmp/x.jpg",
+        )
+        slideshow_id = upsert_slideshow(
+            conn, "2026-08-17", "generated", "/tmp/slideshows/2026-08-17", "/tmp/slideshows/2026-08-17/manifest.json",
+            1, 1, "2026-08-17T12:00:00+00:00",
+        )
+        replace_slideshow_items(
+            conn, slideshow_id,
+            [{
+                "species_id": species_id, "bird_image_id": image_id, "display_order": 1,
+                "title_text": "Black-capped Chickadee", "subtitle_text": "Poecile atricapillus",
+                "detection_summary_text": "Detected 1 time today", "rendered_file_path": "/tmp/slideshows/1.jpg",
+            }],
+        )
+        # A second build with a different item set should replace, not append.
+        replace_slideshow_items(
+            conn, slideshow_id,
+            [{
+                "species_id": species_id, "bird_image_id": image_id, "display_order": 1,
+                "title_text": "Black-capped Chickadee", "subtitle_text": "Poecile atricapillus",
+                "detection_summary_text": "Detected 2 times today", "rendered_file_path": "/tmp/slideshows/1.jpg",
+            }],
+        )
+
+    items = conn.execute("SELECT * FROM slideshow_items WHERE slideshow_id = ?", (slideshow_id,)).fetchall()
+    assert len(items) == 1
+    assert items[0]["detection_summary_text"] == "Detected 2 times today"
+    assert detection_id  # sanity: fixture actually created a detection

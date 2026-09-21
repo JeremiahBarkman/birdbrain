@@ -22,6 +22,15 @@ _REQUEST_TIMEOUT_SECONDS = 15
 # Matches the frame's target width (§16.4) — no point fetching more.
 _THUMBNAIL_WIDTH = 1920
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+# Commons' Credit field is usually just a copy of the Source field, and
+# for a self-published photo that's conventionally the literal string
+# "Own work" — meaningful as Commons metadata (it's an uploader's claim
+# about provenance) but useless as something to actually credit on a
+# slide (§16.2's "required attribution" means crediting a person, not
+# echoing an internal metadata convention). Filtered out below so the
+# Artist field (the actual photographer/uploader name) gets shown
+# instead whenever this is the only thing Credit has to offer.
+_GENERIC_CREDIT_VALUES = {"own work", "self-published work", "self-photographed", "self photographed"}
 # Wikimedia's API etiquette asks for an identifying User-Agent on all
 # requests; generic/anonymous clients risk being rate-limited or blocked.
 _USER_AGENT_HEADER = {
@@ -122,6 +131,9 @@ class WikimediaCommonsProvider(ImageProvider):
             height = info.get("thumbheight") or info.get("height")
             meta = info.get("extmetadata", {})
             artist = _strip_html(_meta_value(meta, "Artist"))
+            credit = _strip_html(_meta_value(meta, "Credit"))
+            if credit and credit.strip().lower() in _GENERIC_CREDIT_VALUES:
+                credit = None
             candidates.append(
                 ImageCandidate(
                     source_provider=self.name,
@@ -133,7 +145,11 @@ class WikimediaCommonsProvider(ImageProvider):
                     photographer_name=artist,
                     license_name=_meta_value(meta, "LicenseShortName"),
                     license_url=_meta_value(meta, "LicenseUrl"),
-                    attribution_text=_strip_html(_meta_value(meta, "Credit")) or artist,
+                    # Artist preferred over Credit — Credit is often
+                    # just a copy of the Source field (see
+                    # _GENERIC_CREDIT_VALUES above), while Artist is
+                    # the actual name to credit.
+                    attribution_text=artist or credit,
                     search_query=query,
                 )
             )

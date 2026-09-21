@@ -36,6 +36,22 @@ def create_app(app_config: AppConfig, config_path: Path | None = None) -> Flask:
     app.config["GAIN_DEFAULT"] = app_config.audio.gain
     app.config["DEVICE_CONTROL_PATH"] = data_directory / "run" / "mic_device.json"
     app.config["DEVICE_DEFAULT"] = app_config.audio.device_name
+    # Fullscreen slideshow preview (§16, user request): the same
+    # qualification/ordering/presentation config the eventual frame
+    # delivery pipeline (§29 Phase 5) will use, applied here to a live
+    # query instead of the not-yet-scheduled daily_species_summary
+    # table — see /api/slideshow in routes.py.
+    app.config["SLIDESHOW_MIN_CONFIDENCE"] = app_config.birdnet.slideshow_minimum_confidence
+    app.config["SLIDESHOW_ORDER"] = app_config.slideshow.order
+    app.config["SLIDESHOW_DISPLAY_MODE"] = app_config.slideshow.display_mode
+    app.config["SLIDESHOW_IMAGE_DURATION_SECONDS"] = app_config.slideshow.image_duration_seconds
+    # "Save to SD" export (§29 Phase 5's builder, user request): renders
+    # a real slideshow for today into data/slideshows/<date>/ — the
+    # same directory the frame delivery pipeline will eventually read
+    # from too — and /api/slideshow/export (routes.py) serves those
+    # files individually for the browser to download into the
+    # viewer's own Downloads folder.
+    app.config["SLIDESHOW_OUTPUT_ROOT"] = data_directory / "slideshows"
     # Optional: without it (e.g. most existing tests), a device switch
     # still takes effect live via DEVICE_CONTROL_PATH above, it just
     # isn't persisted back into config.yaml for the next full restart.

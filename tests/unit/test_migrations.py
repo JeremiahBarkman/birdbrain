@@ -6,12 +6,13 @@ from backyard_bird.database.migrations import apply_migrations, discover_migrati
 MIGRATIONS_DIR = Path(__file__).resolve().parents[2] / "migrations"
 
 
-def test_discover_migrations_finds_001_through_004() -> None:
+def test_discover_migrations_finds_001_through_005() -> None:
     versions = [version for version, _, _ in discover_migrations(MIGRATIONS_DIR)]
     assert 1 in versions
     assert 2 in versions
     assert 3 in versions
     assert 4 in versions
+    assert 5 in versions
 
 
 def test_apply_migrations_creates_expected_tables(tmp_path: Path) -> None:
@@ -20,12 +21,13 @@ def test_apply_migrations_creates_expected_tables(tmp_path: Path) -> None:
 
     applied = apply_migrations(conn, MIGRATIONS_DIR)
 
-    assert applied == [1, 2, 3, 4]
+    assert applied == [1, 2, 3, 4, 5]
     tables = {
         row["name"] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'").fetchall()
     }
     assert {
         "schema_migrations", "audio_segments", "species", "detections", "bird_images", "best_recordings",
+        "daily_species_summary", "slideshows", "slideshow_items",
     } <= tables
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(best_recordings)").fetchall()}
     assert "highpass_hz" in columns
@@ -38,7 +40,7 @@ def test_apply_migrations_is_idempotent(tmp_path: Path) -> None:
     first = apply_migrations(conn, MIGRATIONS_DIR)
     second = apply_migrations(conn, MIGRATIONS_DIR)
 
-    assert first == [1, 2, 3, 4]
+    assert first == [1, 2, 3, 4, 5]
     assert second == []
 
 

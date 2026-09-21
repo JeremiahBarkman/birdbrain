@@ -23,8 +23,19 @@ from backyard_bird.setup_wizard import GeocodeResult
 def config_path(tmp_path: Path) -> Path:
     # Copying the tracked example (not hand-writing a minimal one) keeps
     # this from drifting out of sync with config.yaml's required fields.
+    # data_directory is repointed at tmp_path defensively: the example's
+    # `./data` is relative to the process's cwd (the repo root, under
+    # pytest), not to this config file, so anything that ever resolves
+    # it here must not be able to land on the *real* data/ directory —
+    # see DEVELOPMENT.md's 2026-09-21 dated note on exactly that
+    # happening in a sibling test file. `setup` itself never touches
+    # data_directory today, but this fixture shouldn't rely on that
+    # staying true.
     dest = tmp_path / "config.yaml"
     shutil.copy(Path("config/config.example.yaml"), dest)
+    text = dest.read_text()
+    assert "data_directory: ./data" in text  # sanity: config.example.yaml's shape hasn't drifted
+    dest.write_text(text.replace("data_directory: ./data", f"data_directory: {tmp_path / 'data'}"))
     return dest
 
 

@@ -3,13 +3,15 @@ socket, or browser involved.
 """
 from __future__ import annotations
 
+import io
+import zipfile
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
 
 from backyard_bird.audio.clips import species_clip_path, species_spectrogram_path
-from backyard_bird.config import AppConfig, AudioConfig, LocationConfig, SystemConfig
+from backyard_bird.config import AppConfig, AudioConfig, BirdNETConfig, LocationConfig, SlideshowConfig, SystemConfig
 from backyard_bird.database.connection import get_connection
 from backyard_bird.database.migrations import apply_migrations
 from backyard_bird.database.repositories import (
@@ -156,6 +158,213 @@ def test_api_stats_malformed_date_falls_back_to_unfiltered(client) -> None:
     response = client.get("/api/stats?date=not-a-date")
     assert response.status_code == 200
     assert len(response.get_json()["species"]) == 1
+
+
+def test_api_slideshow_includes_qualifying_species(client) -> None:
+    response = client.get("/api/slideshow")
+    assert response.status_code == 200
+    data = response.get_json()
+
+    assert data["display_mode"] == "informational"  # SlideshowConfig's default
+    assert data["image_duration_seconds"] == 20
+    assert len(data["slides"]) == 1
+    slide = data["slides"][0]
+    assert slide["common_name"] == "Black-capped Chickadee"
+    assert slide["scientific_name"] == SCIENTIFIC
+    assert slide["image_url"] == "/media/species/poecile-atricapillus/optimized_1920x1080.jpg"
+    assert slide["detection_count"] == 1
+    assert slide["highest_confidence"] == 0.81
+    assert "first_detected_local_iso" in slide
+
+
+def test_api_slideshow_excludes_species_without_an_approved_image(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path, with_image=False)
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        data = c.get("/api/slideshow").get_json()
+
+    assert data["slides"] == []
+
+
+def test_api_slideshow_excludes_species_below_the_configured_confidence_threshold(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path)  # confidence 0.81
+    config = _app_config(tmp_path)
+    config.birdnet = BirdNETConfig(slideshow_minimum_confidence=0.95)
+    app = create_app(config)
+    app.testing = True
+    with app.test_client() as c:
+        data = c.get("/api/slideshow").get_json()
+
+    assert data["slides"] == []
+
+
+def test_api_slideshow_excludes_a_detection_from_a_previous_day(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    apply_migrations(conn, MIGRATIONS_DIR)
+    detected_at = datetime.now(timezone.utc) - timedelta(days=2)
+    with conn:
+        segment_id = insert_audio_segment(
+            conn, "mic-01", "incoming/a.wav", detected_at, detected_at + timedelta(seconds=30),
+            30.0, 48000, 1, 1000, "abc",
+        )
+        species_id = get_or_create_species(conn, SCIENTIFIC, "Black-capped Chickadee")
+        insert_detection(conn, segment_id, species_id, detected_at, 5.0, 8.0, 0.90, 1.0, None, None, False, None)
+        cache_dir = species_cache_dir(tmp_path / "images", SCIENTIFIC)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        image_path = cache_dir / "optimized_1920x1080.jpg"
+        image_path.write_bytes(b"\xff\xd8\xff fake jpeg bytes for testing")
+        insert_bird_image(
+            conn, species_id=species_id, source_provider="wikimedia_commons",
+            original_image_url="https://example.com/chickadee.jpg", status="approved",
+            local_file_path=str(image_path),
+        )
+    conn.close()
+
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        data = c.get("/api/slideshow").get_json()
+
+    assert data["slides"] == []
+
+
+def test_api_slideshow_respects_configured_display_mode_and_duration(tmp_path: Path) -> None:
+    _seed_detection_with_image(tmp_path)
+    config = _app_config(tmp_path)
+    config.slideshow = SlideshowConfig(display_mode="clean", image_duration_seconds=45)
+    app = create_app(config)
+    app.testing = True
+    with app.test_client() as c:
+        data = c.get("/api/slideshow").get_json()
+
+    assert data["display_mode"] == "clean"
+    assert data["image_duration_seconds"] == 45
+
+
+def test_api_slideshow_orders_alphabetically_when_configured(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    apply_migrations(conn, MIGRATIONS_DIR)
+    now = datetime.now(timezone.utc) - timedelta(minutes=5)
+    with conn:
+        for name, scientific, offset in (
+            ("Zebra Finch", "Taeniopygia guttata", 0),
+            ("American Robin", "Turdus migratorius", 1),
+        ):
+            segment_id = insert_audio_segment(
+                conn, "mic-01", f"incoming/{scientific}.wav", now, now + timedelta(seconds=30),
+                30.0, 48000, 1, 1000, scientific,
+            )
+            species_id = get_or_create_species(conn, scientific, name)
+            insert_detection(
+                conn, segment_id, species_id, now + timedelta(seconds=offset), 5.0, 8.0, 0.90, 1.0,
+                None, None, False, None,
+            )
+            cache_dir = species_cache_dir(tmp_path / "images", scientific)
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            image_path = cache_dir / "optimized_1920x1080.jpg"
+            image_path.write_bytes(b"\xff\xd8\xff fake jpeg bytes for testing")
+            insert_bird_image(
+                conn, species_id=species_id, source_provider="wikimedia_commons",
+                original_image_url=f"https://example.com/{scientific}.jpg", status="approved",
+                local_file_path=str(image_path),
+            )
+    conn.close()
+
+    config = _app_config(tmp_path)
+    config.slideshow = SlideshowConfig(order="alphabetical")
+    app = create_app(config)
+    app.testing = True
+    with app.test_client() as c:
+        data = c.get("/api/slideshow").get_json()
+
+    assert [s["common_name"] for s in data["slides"]] == ["American Robin", "Zebra Finch"]
+
+
+def _seed_detection_with_real_image(data_directory: Path) -> None:
+    """Like _seed_detection_with_image, but with an actual decodable
+    JPEG rather than placeholder bytes — the export endpoint really
+    renders through Pillow (slideshow/builder.py -> renderer.py),
+    unlike everything else in this file that only ever serves the
+    cached file back verbatim.
+    """
+    from PIL import Image
+
+    from backyard_bird.slideshow.renderer import FRAME_HEIGHT, FRAME_WIDTH
+
+    conn = get_connection(data_directory / "database" / "birds.sqlite3")
+    apply_migrations(conn, MIGRATIONS_DIR)
+    detected_at = datetime.now(timezone.utc) - timedelta(minutes=5)
+    started = detected_at - timedelta(seconds=5)
+    with conn:
+        segment_id = insert_audio_segment(
+            conn, "mic-01", "incoming/a.wav", started, started + timedelta(seconds=30),
+            30.0, 48000, 1, 1000, "abc",
+        )
+        species_id = get_or_create_species(conn, SCIENTIFIC, "Black-capped Chickadee")
+        insert_detection(conn, segment_id, species_id, detected_at, 5.0, 8.0, 0.81, 1.0, None, None, False, None)
+        cache_dir = species_cache_dir(data_directory / "images", SCIENTIFIC)
+        cache_dir.mkdir(parents=True, exist_ok=True)
+        image_path = cache_dir / "optimized_1920x1080.jpg"
+        Image.new("RGB", (FRAME_WIDTH, FRAME_HEIGHT), (40, 80, 40)).save(image_path, format="JPEG")
+        insert_bird_image(
+            conn, species_id=species_id, source_provider="wikimedia_commons",
+            original_image_url="https://example.com/chickadee.jpg", status="approved",
+            local_file_path=str(image_path), attribution_text="Jane Doe",
+        )
+    conn.close()
+
+
+def test_api_slideshow_export_zip_actually_builds_the_slideshow_in_the_database(tmp_path: Path) -> None:
+    _seed_detection_with_real_image(tmp_path)
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/slideshow/export.zip")
+    assert response.status_code == 200
+
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    row = conn.execute("SELECT * FROM slideshows WHERE local_date = ?", (today,)).fetchone()
+    conn.close()
+    assert row is not None
+    assert row["species_count"] == 1
+
+
+def test_api_slideshow_export_zip_contains_a_date_named_folder(tmp_path: Path) -> None:
+    _seed_detection_with_real_image(tmp_path)
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/slideshow/export.zip")
+
+    assert response.status_code == 200
+    assert response.mimetype == "application/zip"
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    assert f'filename="Birdbrain Slideshow {today}.zip"' in response.headers["Content-Disposition"]
+
+    with zipfile.ZipFile(io.BytesIO(response.data)) as zf:
+        names = zf.namelist()
+        # Every entry lives under <date>/ — extracting the zip produces
+        # exactly one dated folder, not files loose at the zip root.
+        assert all(name.startswith(f"{today}/") for name in names)
+        assert f"{today}/manifest.json" in names
+        assert f"{today}/README.txt" in names
+        assert any(name.endswith(".jpg") for name in names)
+
+
+def test_api_slideshow_export_zip_404s_when_nothing_qualifies(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    apply_migrations(conn, MIGRATIONS_DIR)
+    conn.close()
+
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/slideshow/export.zip")
+
+    assert response.status_code == 404
+    assert "error" in response.get_json()
 
 
 def test_species_without_an_approved_image_has_null_image_url(tmp_path: Path) -> None:

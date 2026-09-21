@@ -20,6 +20,8 @@
         <option value="">Loading devices…</option>
       </select>
       <button id="live-monitor-btn" class="filter-btn mic-status-listen" type="button">🔊 Listen Live</button>
+      <button id="slideshow-btn" class="filter-btn" type="button">▶ Slideshow</button>
+      <button id="save-sd-btn" class="filter-btn" type="button">💾 Save Slides</button>
     </div>
     <div class="level-meter" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100">
       <div class="level-meter-fill" id="level-meter-fill"></div>
@@ -167,6 +169,20 @@
       </div>
       <audio id="recording-modal-audio" controls preload="none" src=""></audio>
     </div>
+  </div>
+
+  <div class="slideshow-overlay" id="slideshow-overlay" hidden>
+    <div class="slideshow-slide">
+      <img class="slideshow-image" id="slideshow-image" src="" alt="">
+      <div class="slideshow-scrim"></div>
+      <div class="slideshow-text">
+        <div class="slideshow-common-name" id="slideshow-common-name"></div>
+        <div class="slideshow-scientific-name" id="slideshow-scientific-name"></div>
+        <div class="slideshow-info" id="slideshow-info"></div>
+      </div>
+      <div class="slideshow-attribution" id="slideshow-attribution"></div>
+    </div>
+    <div class="slideshow-empty" id="slideshow-empty" hidden>No qualifying species yet today.</div>
   </div>
 
   <script src="{{ url_for('static', filename='dashboard.js') }}"></script>

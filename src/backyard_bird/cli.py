@@ -64,6 +64,37 @@ def _lan_ip() -> str | None:
         return None
 
 
+def _all_local_ipv4_addresses() -> list[str]:
+    """Every IPv4 address this machine currently answers to, for the
+    self-signed cert's SAN list (`dashboard generate-cert`) — a
+    multi-homed host (this Pi has both eth0 and wlan0) needs every
+    interface covered, not just whichever one `_lan_ip()`'s single
+    best-guess route happens to pick, or the cert won't validate when
+    reached from the interface that didn't make the list.
+
+    `hostname -I` is Linux-specific (this project's primary deployment
+    target, §7); macOS falls back to `_lan_ip()`'s single address
+    rather than failing outright.
+    """
+    import platform
+    import subprocess
+
+    addresses: list[str] = []
+    if platform.system() == "Linux":
+        try:
+            output = subprocess.run(
+                ["hostname", "-I"], capture_output=True, text=True, timeout=5, check=True
+            ).stdout
+            addresses = [addr for addr in output.split() if ":" not in addr]  # IPv4 only, skip IPv6
+        except (subprocess.SubprocessError, OSError):
+            pass
+    if not addresses:
+        best_guess = _lan_ip()
+        if best_guess:
+            addresses = [best_guess]
+    return addresses
+
+
 def _db_path(app_config: AppConfig) -> Path:
     return app_config.system.data_directory / "database" / "birds.sqlite3"
 
@@ -493,11 +524,12 @@ def dashboard_url(ctx: click.Context) -> None:
     config_path: Path = ctx.obj["config_path"]
     app_config = _load_config_or_exit(config_path)
     host, port = _resolve_dashboard_host_port(None, None, app_config.dashboard)
+    scheme = "https" if app_config.dashboard.tls_cert_path and app_config.dashboard.tls_key_path else "http"
     if host in ("127.0.0.1", "localhost"):
-        click.echo(f"http://{host}:{port}")
+        click.echo(f"{scheme}://{host}:{port}")
         return
     lan_ip = _lan_ip() if host == "0.0.0.0" else host
-    click.echo(f"http://{lan_ip or host}:{port}")
+    click.echo(f"{scheme}://{lan_ip or host}:{port}")
 
 
 @dashboard.command("run")
@@ -522,7 +554,7 @@ def dashboard_url(ctx: click.Context) -> None:
 )
 @click.pass_context
 def dashboard_run(ctx: click.Context, host: str | None, port: int | None, reload_: bool) -> None:
-    """Serve the live stats dashboard over HTTP."""
+    """Serve the live stats dashboard over HTTP (or HTTPS, if dashboard.tls_cert_path/tls_key_path are set)."""
     from backyard_bird.web.app import create_app
 
     config_path: Path = ctx.obj["config_path"]
@@ -531,17 +563,103 @@ def dashboard_run(ctx: click.Context, host: str | None, port: int | None, reload
 
     host, port = _resolve_dashboard_host_port(host, port, app_config.dashboard)
 
+    ssl_context = None
+    scheme = "http"
+    if app_config.dashboard.tls_cert_path and app_config.dashboard.tls_key_path:
+        cert_path, key_path = app_config.dashboard.tls_cert_path, app_config.dashboard.tls_key_path
+        if cert_path.exists() and key_path.exists():
+            ssl_context = (str(cert_path), str(key_path))
+            scheme = "https"
+        else:
+            click.echo(
+                f"dashboard.tls_cert_path/tls_key_path are set but one doesn't exist "
+                f"({cert_path}, {key_path}) — falling back to plain HTTP. "
+                f"Run `bird-display dashboard generate-cert` to create them.",
+                err=True,
+            )
+
     app = create_app(app_config, config_path=config_path)
-    click.echo(f"Dashboard running on http://{host}:{port}  (Ctrl-C to stop)")
+    click.echo(f"Dashboard running on {scheme}://{host}:{port}  (Ctrl-C to stop)")
     if host not in ("127.0.0.1", "localhost"):
         # 0.0.0.0 means "every interface" — not itself a usable URL, so
         # show the machine's actual LAN address for other devices to use.
         lan_ip = _lan_ip() if host == "0.0.0.0" else host
         if lan_ip:
-            click.echo(f"  From other devices on your network: http://{lan_ip}:{port}")
+            click.echo(f"  From other devices on your network: {scheme}://{lan_ip}:{port}")
     if reload_:
         click.echo("  --reload: watching .py files, will restart on change")
-    app.run(host=host, port=port, debug=False, use_reloader=reload_)
+
+    app.run(host=host, port=port, debug=False, use_reloader=reload_, ssl_context=ssl_context)
+
+
+@dashboard.command("generate-cert")
+@click.pass_context
+def dashboard_generate_cert(ctx: click.Context) -> None:
+    """Create a self-signed HTTPS cert/key for the dashboard.
+
+    Only needed for the "Save to SD" button's browse-to-a-folder flow
+    (the File System Access API) — browsers only expose that in a
+    secure context (HTTPS, or localhost), and this dashboard is
+    normally reached over plain HTTP at a LAN address (§23.3). Every
+    other dashboard feature works fine without this.
+
+    Not something the dashboard's own web UI could ever trigger — the
+    dashboard doesn't have permission to write config.yaml or run
+    openssl, and shouldn't (CLAUDE.md rule 5, §30 rule 3-style
+    separation), so this is a one-time setup command instead.
+    """
+    import shutil
+    import socket
+    import subprocess
+
+    config_path: Path = ctx.obj["config_path"]
+    app_config = _load_config_or_exit(config_path)
+
+    if shutil.which("openssl") is None:
+        click.echo("openssl not found on PATH — install it first (it ships with Linux/macOS by default).", err=True)
+        sys.exit(1)
+
+    tls_dir = app_config.system.data_directory.resolve() / "tls"
+    tls_dir.mkdir(parents=True, exist_ok=True)
+    cert_path = tls_dir / "dashboard.crt"
+    key_path = tls_dir / "dashboard.key"
+
+    addresses = _all_local_ipv4_addresses()
+    if not addresses:
+        click.echo("Could not determine this machine's LAN IP address(es) — aborting.", err=True)
+        sys.exit(1)
+
+    san_entries = ["DNS:localhost", "IP:127.0.0.1"] + [f"IP:{addr}" for addr in addresses]
+    try:
+        san_entries.append(f"DNS:{socket.gethostname()}")
+    except OSError:
+        pass
+    san_value = "subjectAltName=" + ",".join(san_entries)
+
+    click.echo(f"Generating a self-signed cert covering: {', '.join(san_entries)}")
+    subprocess.run(
+        [
+            "openssl", "req", "-x509", "-newkey", "rsa:2048", "-nodes",
+            "-keyout", str(key_path), "-out", str(cert_path),
+            "-days", "3650",
+            "-subj", "/CN=backyard-bird-display",
+            "-addext", san_value,
+        ],
+        check=True,
+        capture_output=True,
+    )
+    key_path.chmod(0o600)
+
+    click.echo(f"\nCreated {cert_path} and {key_path}.")
+    click.echo("\nAdd (or uncomment) these two lines under dashboard: in your config.yaml:\n")
+    click.echo(f"  tls_cert_path: {cert_path}")
+    click.echo(f"  tls_key_path: {key_path}")
+    click.echo(
+        "\nThen restart the dashboard. It'll be reachable at https://<this machine's address>:<port> — "
+        "your browser will warn the connection isn't private (expected for a self-signed cert); "
+        "click through it once per browser/device. Regenerate this cert (same command) if the "
+        "machine's LAN IP address ever changes, since the old address won't be in the new cert's list."
+    )
 
 
 def _build_image_providers(preferred_sources: list[str]) -> list:

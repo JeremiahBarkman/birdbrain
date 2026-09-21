@@ -85,6 +85,15 @@ dashboard:
   # do this on a network you trust. See README's Phase 3.5 notes.
   host: 127.0.0.1
   port: 8765
+  # Optional HTTPS. Not required by anything the dashboard currently
+  # ships with (the "Save Slides" button works fine over plain HTTP);
+  # only useful if you want the dashboard reachable over TLS for your
+  # own reasons. Leave both unset for plain HTTP (the default).
+  # `bird-display dashboard generate-cert` creates a self-signed
+  # cert/key under data/tls/ (unique to your machine, never committed)
+  # and prints the two lines to uncomment here.
+  # tls_cert_path: ./data/tls/dashboard.crt
+  # tls_key_path: ./data/tls/dashboard.key
 
 slideshow:
   update_interval_minutes: 30

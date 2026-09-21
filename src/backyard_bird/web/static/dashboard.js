@@ -921,3 +921,197 @@ pollMicStatus();
 setInterval(pollMicStatus, MIC_STATUS_POLL_INTERVAL_MS);
 fetchGain();
 fetchMicDevices();
+
+// Fullscreen slideshow preview (§16, user request): a browser-side
+// companion to the eventual physical-frame delivery pipeline (§29
+// Phase 5/6/7) — not that pipeline itself. /api/slideshow applies the
+// same qualification rule §16.2 describes (confidence threshold +
+// approved image) and returns slides already ordered per
+// config.slideshow.order; this just cycles through them fullscreen
+// until any key press or mouse action ends it.
+const slideshowBtn = document.getElementById("slideshow-btn");
+const slideshowOverlay = document.getElementById("slideshow-overlay");
+const slideshowImageEl = document.getElementById("slideshow-image");
+const slideshowCommonNameEl = document.getElementById("slideshow-common-name");
+const slideshowScientificNameEl = document.getElementById("slideshow-scientific-name");
+const slideshowInfoEl = document.getElementById("slideshow-info");
+const slideshowAttributionEl = document.getElementById("slideshow-attribution");
+const slideshowEmptyEl = document.getElementById("slideshow-empty");
+
+let slideshowSlides = [];
+let slideshowIndex = 0;
+let slideshowTimer = null;
+let slideshowDisplayMode = "informational";
+let slideshowIntervalMs = 20000;
+// Guards against the click that opened the slideshow (and any residual
+// mousemove jitter right after) immediately tripping the "exit on
+// mouse action" listener before the user has actually looked at it.
+let slideshowExitArmedAt = 0;
+
+function slideshowFormatTime(isoString) {
+  try {
+    return new Date(isoString).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  } catch {
+    return "";
+  }
+}
+
+function renderSlideshowSlide(slide) {
+  slideshowImageEl.src = slide.image_url;
+  slideshowImageEl.alt = slide.common_name;
+  slideshowCommonNameEl.textContent = slide.common_name;
+  slideshowScientificNameEl.textContent = slide.scientific_name;
+
+  if (slideshowDisplayMode === "clean") {
+    slideshowInfoEl.hidden = true;
+    slideshowAttributionEl.hidden = true;
+    return;
+  }
+
+  const times = slide.detection_count === 1 ? "time" : "times";
+  slideshowInfoEl.textContent =
+    `First heard: ${slideshowFormatTime(slide.first_detected_local_iso)}` +
+    `  •  Detected ${slide.detection_count} ${times} today`;
+  slideshowInfoEl.hidden = false;
+
+  slideshowAttributionEl.textContent = slide.attribution_text || "";
+  slideshowAttributionEl.hidden = !slide.attribution_text;
+}
+
+function advanceSlideshow() {
+  if (slideshowSlides.length === 0) return;
+  slideshowIndex = (slideshowIndex + 1) % slideshowSlides.length;
+  renderSlideshowSlide(slideshowSlides[slideshowIndex]);
+}
+
+function stopSlideshow() {
+  if (slideshowTimer) {
+    clearInterval(slideshowTimer);
+    slideshowTimer = null;
+  }
+  slideshowOverlay.hidden = true;
+  slideshowImageEl.src = "";
+  document.removeEventListener("keydown", stopSlideshow);
+  document.removeEventListener("mousedown", stopSlideshow);
+  document.removeEventListener("mousemove", slideshowMaybeStopOnMove);
+  if (document.fullscreenElement) {
+    document.exitFullscreen().catch(() => {});
+  }
+}
+
+function slideshowMaybeStopOnMove() {
+  if (Date.now() < slideshowExitArmedAt) return;
+  stopSlideshow();
+}
+
+async function startSlideshow() {
+  let data;
+  try {
+    const response = await fetch("/api/slideshow");
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    data = await response.json();
+  } catch (err) {
+    console.error("slideshow fetch failed:", err);
+    alert("Could not load the slideshow — see the browser console for details.");
+    return;
+  }
+
+  slideshowSlides = data.slides || [];
+  slideshowDisplayMode = data.display_mode || "informational";
+  slideshowIntervalMs = Math.max(3, Number(data.image_duration_seconds) || 20) * 1000;
+  slideshowIndex = 0;
+
+  slideshowEmptyEl.hidden = slideshowSlides.length > 0;
+  if (slideshowSlides.length > 0) {
+    renderSlideshowSlide(slideshowSlides[0]);
+  } else {
+    slideshowImageEl.src = "";
+    slideshowCommonNameEl.textContent = "";
+    slideshowScientificNameEl.textContent = "";
+    slideshowInfoEl.hidden = true;
+    slideshowAttributionEl.hidden = true;
+  }
+
+  slideshowOverlay.hidden = false;
+  // Fullscreen can be denied (e.g. no direct user-gesture chain in
+  // some embedded contexts) — the overlay still covers the viewport
+  // via CSS (position: fixed; inset: 0), so it degrades to a
+  // full-page view rather than failing outright.
+  slideshowOverlay.requestFullscreen?.().catch(() => {});
+
+  if (slideshowSlides.length > 1) {
+    slideshowTimer = setInterval(advanceSlideshow, slideshowIntervalMs);
+  }
+
+  slideshowExitArmedAt = Date.now() + 500;
+  setTimeout(() => {
+    document.addEventListener("keydown", stopSlideshow);
+    document.addEventListener("mousedown", stopSlideshow);
+    document.addEventListener("mousemove", slideshowMaybeStopOnMove);
+  }, 0);
+}
+
+slideshowBtn.addEventListener("click", startSlideshow);
+
+// Covers the browser's own fullscreen-exit affordances (Esc, OS/browser
+// chrome) in case those don't also deliver a keydown/mousedown the
+// listeners above would otherwise catch. Idempotent with stopSlideshow
+// above — either path running first leaves the same end state.
+document.addEventListener("fullscreenchange", () => {
+  if (!document.fullscreenElement && !slideshowOverlay.hidden) {
+    stopSlideshow();
+  }
+});
+
+// "Save to SD" (user request): builds today's slideshow server-side
+// (backyard_bird.slideshow.builder — real rendered JPEGs, not the
+// preview's live query) and downloads it as a single ZIP to whatever
+// device this browser is running on — a phone or laptop on the LAN,
+// not the Pi itself. Extracting it (one right-click) produces a
+// folder named for today's date, ready to copy onto an SD card or
+// into a connected frame's DCIM folder with the viewer's own file
+// manager.
+//
+// One ZIP, deliberately: two earlier approaches both hit real
+// platform limits — the File System Access API's folder picker can't
+// target MTP-connected devices (how the actual frame exposes storage
+// over USB) at all, and downloading each file individually with a
+// subfolder path in its `download` attribute turned out not to create
+// real folders in Chrome (slashes get sanitized into underscores) and
+// tripped a disruptive "this site wants to download multiple files"
+// prompt partway through. A single download avoids both — nothing
+// here needs a filesystem handle to anything but Downloads, and one
+// file never triggers the multi-download gate.
+const saveSdBtn = document.getElementById("save-sd-btn");
+
+saveSdBtn.addEventListener("click", async () => {
+  const originalText = saveSdBtn.textContent;
+  saveSdBtn.disabled = true;
+  saveSdBtn.textContent = "Saving…";
+  try {
+    const response = await fetch("/api/slideshow/export.zip");
+    if (!response.ok) {
+      const data = await response.json().catch(() => ({}));
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    const blob = await response.blob();
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const match = disposition.match(/filename="?([^"]+)"?/);
+    const filename = match ? match[1] : "birdbrain-slideshow.zip";
+
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(url);
+  } catch (err) {
+    console.error("slideshow export failed:", err);
+    alert(`Could not save today's slideshow: ${err.message}`);
+  } finally {
+    saveSdBtn.disabled = false;
+    saveSdBtn.textContent = originalText;
+  }
+});

@@ -101,12 +101,73 @@ def test_search_returns_parsed_candidates() -> None:
     assert male.photographer_name == "Jane Doe"  # HTML stripped
     assert male.license_name == "CC BY-SA 4.0"
     assert male.search_query == "House Finch"
+    # Credit is "Own work" (see fixture above) — that's Commons
+    # metadata boilerplate, not a real credit line, so the actual
+    # photographer name is preferred for attribution_text instead.
+    assert male.attribution_text == "Jane Doe"
 
     # No thumburl in this entry -> falls back to the full-size original.
     female = next(c for c in candidates if "female" in c.original_image_url)
     assert female.original_image_url == "https://upload.wikimedia.org/house-finch-female.jpg"
     assert female.image_width == 1200
     assert female.license_name is None  # no extmetadata provided — must not crash
+
+
+def test_generic_credit_alone_produces_no_attribution_text() -> None:
+    # No Artist at all this time, only a generic Credit value — there's
+    # genuinely no one to credit, so attribution_text should be None
+    # rather than the literal string "Own work".
+    response = {
+        "query": {
+            "pages": {
+                "1": {
+                    "imageinfo": [
+                        {
+                            "url": "https://upload.wikimedia.org/x.jpg",
+                            "width": 2000,
+                            "height": 1500,
+                            "mime": "image/jpeg",
+                            "extmetadata": {"Credit": {"value": "Own work"}},
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    session = _FakeSession([_FakeResponse({"query": {"search": [{"title": "File:x.jpg"}]}}), _FakeResponse(response)])
+    provider = WikimediaCommonsProvider(session=session)
+
+    candidates = provider.search("some bird")
+
+    assert len(candidates) == 1
+    assert candidates[0].attribution_text is None
+
+
+def test_non_generic_credit_is_used_when_no_artist_is_present() -> None:
+    response = {
+        "query": {
+            "pages": {
+                "1": {
+                    "imageinfo": [
+                        {
+                            "url": "https://upload.wikimedia.org/x.jpg",
+                            "width": 2000,
+                            "height": 1500,
+                            "mime": "image/jpeg",
+                            "extmetadata": {"Credit": {"value": "Courtesy of Example Nature Society"}},
+                        }
+                    ]
+                }
+            }
+        }
+    }
+    session = _FakeSession([_FakeResponse({"query": {"search": [{"title": "File:x.jpg"}]}}), _FakeResponse(response)])
+    provider = WikimediaCommonsProvider(session=session)
+
+    candidates = provider.search("some bird")
+
+    assert len(candidates) == 1
+    assert candidates[0].attribution_text == "Courtesy of Example Nature Society"
 
 
 def test_search_returns_empty_list_when_no_results() -> None:

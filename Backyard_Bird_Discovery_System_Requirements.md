@@ -1354,6 +1354,59 @@ The dashboard should display:
 - Species detected today
 - Detection count today
 - Current slideshow status
+- **Added, 2026-09-21** (user-requested, beyond this list): a
+  fullscreen slideshow preview. A "▶ Slideshow" button in the header
+  fetches `GET /api/slideshow` (today's qualifying species — same
+  confidence-threshold + approved-image rule §16.2 describes, applied
+  live against `detections` rather than the not-yet-scheduled
+  `daily_species_summary` table, same as `/api/stats`) and cycles
+  fullscreen through them with a text overlay in the browser (Clean or
+  Informational per `slideshow.display_mode`, §16.3), until any key
+  press or mouse action ends it. This previews what the frame delivery
+  pipeline (§29 Phase 5/6/7) will eventually show physically — it does
+  not read from or write to `slideshows`/`slideshow_items`, since no
+  builder populates those yet. See DEVELOPMENT.md's dated
+  implementation note.
+- **Added, 2026-09-21** (user-requested): a "💾 Save Slides" button
+  (originally labeled "Save to SD", renamed same day) next to
+  Slideshow. Unlike the preview above, this calls the real
+  `build_daily_slideshow()` builder (renders actual JPEGs, writes
+  `slideshows`/`slideshow_items`) and gets the result onto whatever
+  device the dashboard is open on — a phone or laptop on the LAN, not
+  the Pi itself. Went through three revisions the same day, two of
+  them dead ends discovered live against the real hardware, before
+  landing on the current approach:
+  1. First cut: a single ZIP download, for the viewer to extract and
+     copy onto a card by hand.
+  2. User clarified the actual intent — browse directly to an
+     already-connected frame's DCIM folder (or an SD card) and write
+     files straight there, no ZIP/extract step. Built via the File
+     System Access API's folder picker (Chrome/Edge only, and only
+     over a secure context — see `dashboard.tls_cert_path`/
+     `tls_key_path`, §18, added specifically for this). Turned out not
+     to work for the actual target device: that API can't see or
+     target MTP-connected devices (which is how the WF1561, like most
+     Android devices, exposes storage over USB) at all — only things
+     with a real OS filesystem path. Confirmed live: Explorer could
+     browse into the frame fine, Chrome's picker couldn't see it.
+  3. Tried downloading every file individually into `Downloads/
+     Birdbrain Slideshow/<date>/`, assuming a subfolder path in an
+     `<a download>` attribute would make Chrome create that folder.
+     Also wrong, confirmed live: Chrome sanitizes the slashes into
+     underscores instead of creating folders, and triggering 20
+     downloads in a loop tripped a "this site wants to download
+     multiple files" permission gate partway through, leaving some
+     files stuck pending confirmation the user hadn't been warned to
+     expect.
+  4. **Current behavior**: back to a single ZIP download (one file, no
+     permission gate, no folder-creation assumption to get wrong), now
+     with every entry stored under a `<date>/` prefix inside the
+     archive so the one extract step the viewer does produces a real
+     dated folder directly — the outcome step 3 wanted, reached
+     through the mechanism step 1 already had.
+  The HTTPS setup from step 2 was left in place (harmless, already
+  deployed) even though nothing on this button needs it anymore. See
+  DEVELOPMENT.md's dated implementation notes for the full history.
 - Frame adapter status
 - Last frame delivery result
 - Available disk space
@@ -1787,17 +1840,63 @@ Exit condition:
 
 Deliverables:
 
-- Daily aggregation
-- 1920 × 1080 templates
-- Cropping and optimization
-- Text overlays
-- Manifest
-- Incremental rebuilding
-- Historical storage
+- Daily aggregation — **done, 2026-09-20**: migration 005 adds
+  `daily_species_summary`/`slideshows`/`slideshow_items` (§12.5/12.7/
+  12.8). `backyard_bird.aggregation.service.aggregate_local_date()`
+  recomputes one local day's summary from `detections` in a single
+  transaction (prune stale species, then upsert current ones) — a full
+  recompute against the authoritative table each time, not an
+  incremental accumulator, so it's idempotent and restart-safe (§30
+  rules 8/9) by construction. `dates_due_for_aggregation()` implements
+  §14's schedule (today every run, plus yesterday for ~20 minutes
+  after local midnight to "finalize" it) as a pure decision function;
+  no scheduler/CLI command drives it yet. See DEVELOPMENT.md's dated
+  implementation note.
+- 1920 × 1080 templates, cropping and optimization — cropping/
+  optimization was already done (Phase 4, `images/cache.py`'s
+  `build_optimized_frame_image`, §15.6). Template rendering itself —
+  **done, 2026-09-20**: `backyard_bird.slideshow.renderer.render_slide()`
+  takes that already-1920×1080 base image and composites the slide
+  frame on top of it (§16.4). See DEVELOPMENT.md's dated implementation
+  note.
+- Text overlays — **done, 2026-09-20**, same module: name/time/count/
+  confidence/attribution text (§16.2), Clean and Informational modes
+  (§16.3), safe margins and unobtrusive attribution placement (§16.4).
+- Manifest — **done, 2026-09-21**: `backyard_bird.slideshow.builder.
+  build_daily_slideshow()` ties aggregation + approved images +
+  `render_slide()` + ordering (§16.5) together — refreshes
+  `daily_species_summary` for a local date, resolves each qualifying
+  species' approved image, renders its slide, and records a real
+  `SlideshowManifest` plus `slideshows`/`slideshow_items` rows
+  (§12.7/12.8, previously unused since migration 005). See
+  DEVELOPMENT.md's dated implementation note.
+- Incremental rebuilding — not yet done (`render_slide()` is
+  deterministic per-slide and `build_daily_slideshow()` is a full
+  rebuild-and-replace each call, both of which a future "only
+  re-render what changed" step needs to be correct on top of — but
+  nothing makes that decision yet; every build currently re-renders
+  every qualifying species).
+- Historical storage — **partially done, 2026-09-21**: each build
+  writes to its own `data/slideshows/<local_date>/` directory rather
+  than overwriting a single "current" location, so calling the builder
+  on consecutive days naturally accumulates history. No retention/
+  pruning of old dates exists yet (unlike `LocalExportAdapter`'s single
+  `current`/`.previous` pair, or `slideshow.retain_daily_slideshows_days`
+  in config, which nothing reads yet).
 
 Exit condition:
 
 > A complete daily slideshow is built automatically from SQLite.
+
+Still not met on the "automatically" half — `build_daily_slideshow()`
+now produces a complete, real slideshow from SQLite (proven by the
+dashboard's "Save Slides" button, §22.1, which calls it directly), but
+nothing calls it on a schedule. It only runs when a human triggers it
+(that button, or eventually a CLI command) — the daily-aggregation
+schedule §14 already specifies (`dates_due_for_aggregation()`,
+§29 Phase 5's aggregation deliverable above) is wired up as a decision
+function but still has no scheduler/cron driving it, and the same is
+true one level up for the builder itself.
 
 ### Phase 6: Euphro Frame Investigation and Adapter
 
@@ -1809,11 +1908,17 @@ Deliverables:
   addresses, and Terminal ID were also read from the device's Settings
   screen but are deliberately not recorded here or anywhere else in
   the repo (§23.4/§30 rule 28).
-- Uhale Web workflow verification — not yet done; no "Uhale Web" /
-  browser-pairing option has been confirmed present in this unit's
-  Settings menu yet.
-- External-media import verification — not yet done on the physical
-  unit.
+- Uhale Web workflow verification — **done, 2026-09-20**: no "Uhale
+  Web" / browser-pairing option is present in this unit's Settings
+  menu. This rules out §17.3 delivery priorities 1 (Uhale Web) and 3
+  (browser automation of it — there is no web UI on this unit to
+  automate). Priority 2 (a documented local-network or cloud API)
+  remains unconfirmed and is not being pursued, per §30 rule 24 and
+  §17.1's ban on reverse engineering as a v1 requirement.
+- External-media import verification — **done, 2026-09-20**: USB/SD
+  import works on this unit, confirming §17.3 priority 4 as the
+  dependable delivery path going forward. See DEVELOPMENT.md's dated
+  implementation note.
 - Adapter decision record — **partially done, 2026-09-20**: the
   `PhotoFrameAdapter` interface (§17.4) and its adapter registry now
   exist in code (`src/backyard_bird/frame/`), with `local_export`

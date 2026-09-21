@@ -132,6 +132,16 @@ class DashboardConfig(BaseModel):
 
     host: str = "127.0.0.1"
     port: int = Field(default=8765, ge=1, le=65535)
+    # Optional HTTPS (user request, 2026-09-21): the File System Access
+    # API the "Save to SD" button's folder-picker flow needs only works
+    # in a secure context (HTTPS, or localhost) — a plain-HTTP LAN
+    # address doesn't qualify. When both are set and the files exist,
+    # `dashboard run` serves over HTTPS with this self-signed cert/key
+    # (`dashboard generate-cert` creates one under data/tls/); when
+    # either is unset, the dashboard serves plain HTTP exactly as
+    # before. Not committed to git — data/ is already excluded (§24).
+    tls_cert_path: Path | None = None
+    tls_key_path: Path | None = None
 
 
 class PhotoFrameConfig(BaseModel):

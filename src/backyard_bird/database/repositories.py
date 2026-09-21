@@ -639,3 +639,236 @@ def get_best_recordings_by_scientific_name(conn: sqlite3.Connection) -> dict[str
         """
     ).fetchall()
     return {row["scientific_name"]: row for row in rows}
+
+
+# -- daily_species_summary (§12.5, §14) ---------------------------------------
+#
+# One row per (local_date, species_id), recomputed from scratch on
+# every aggregation run rather than incrementally accumulated —
+# detections is the authoritative record (CLAUDE.md rule 21), this
+# table is a derived cache of it. That's what makes the aggregation
+# job idempotent and restart-safe (CLAUDE.md rule 9/10): re-running it
+# for a date it already covered just recomputes the same answer, and a
+# detection that gets rejected after its day was first summarized
+# naturally drops out on the next run instead of leaving stale state
+# behind. See backyard_bird.aggregation.service for the job itself.
+
+
+@dataclass(frozen=True)
+class DailyDetectionAggregateRow:
+    species_id: int
+    first_detected_at_utc: str
+    last_detected_at_utc: str
+    detection_count: int
+    highest_confidence: float
+    representative_detection_id: int
+
+
+def list_daily_detection_aggregates(
+    conn: sqlite3.Connection, start_utc: datetime, end_utc: datetime
+) -> list[DailyDetectionAggregateRow]:
+    """One row per species with at least one qualifying detection in
+    [start_utc, end_utc) — the same is_duplicate/review_status
+    exclusion as list_species_summary/list_detections above.
+    representative_detection_id is the highest-confidence detection in
+    range for that species, ties broken by earliest detection time
+    then lowest id, for a fully deterministic pick.
+    """
+    rows = conn.execute(
+        """
+        SELECT species_id, id AS representative_detection_id,
+               first_detected_at_utc, last_detected_at_utc,
+               detection_count, highest_confidence
+        FROM (
+            SELECT
+                d.species_id AS species_id,
+                d.id AS id,
+                MIN(d.detected_at_utc) OVER (PARTITION BY d.species_id) AS first_detected_at_utc,
+                MAX(d.detected_at_utc) OVER (PARTITION BY d.species_id) AS last_detected_at_utc,
+                COUNT(*) OVER (PARTITION BY d.species_id) AS detection_count,
+                MAX(d.confidence) OVER (PARTITION BY d.species_id) AS highest_confidence,
+                ROW_NUMBER() OVER (
+                    PARTITION BY d.species_id
+                    ORDER BY d.confidence DESC, d.detected_at_utc ASC, d.id ASC
+                ) AS rn
+            FROM detections d
+            WHERE d.is_duplicate = 0
+              AND (d.review_status IS NULL OR d.review_status != 'rejected')
+              AND d.detected_at_utc >= ? AND d.detected_at_utc < ?
+        )
+        WHERE rn = 1
+        ORDER BY species_id
+        """,
+        (start_utc.isoformat(), end_utc.isoformat()),
+    ).fetchall()
+    return [
+        DailyDetectionAggregateRow(
+            species_id=r["species_id"],
+            first_detected_at_utc=r["first_detected_at_utc"],
+            last_detected_at_utc=r["last_detected_at_utc"],
+            detection_count=r["detection_count"],
+            highest_confidence=r["highest_confidence"],
+            representative_detection_id=r["representative_detection_id"],
+        )
+        for r in rows
+    ]
+
+
+def upsert_daily_species_summary(
+    conn: sqlite3.Connection,
+    local_date: str,
+    species_id: int,
+    first_detected_at_utc: str,
+    last_detected_at_utc: str,
+    detection_count: int,
+    highest_confidence: float,
+    representative_detection_id: int | None,
+) -> None:
+    now = _now_iso()
+    conn.execute(
+        """
+        INSERT INTO daily_species_summary (
+            local_date, species_id, first_detected_at_utc, last_detected_at_utc,
+            detection_count, highest_confidence, representative_detection_id, updated_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(local_date, species_id) DO UPDATE SET
+            first_detected_at_utc = excluded.first_detected_at_utc,
+            last_detected_at_utc = excluded.last_detected_at_utc,
+            detection_count = excluded.detection_count,
+            highest_confidence = excluded.highest_confidence,
+            representative_detection_id = excluded.representative_detection_id,
+            updated_at_utc = excluded.updated_at_utc
+        """,
+        (
+            local_date,
+            species_id,
+            first_detected_at_utc,
+            last_detected_at_utc,
+            detection_count,
+            highest_confidence,
+            representative_detection_id,
+            now,
+        ),
+    )
+
+
+def delete_daily_species_summary_species_not_in(
+    conn: sqlite3.Connection, local_date: str, keep_species_ids: list[int]
+) -> None:
+    """Prunes stale rows for local_date — species that had a summary
+    from a previous run but no longer qualify (e.g. their only
+    detection was rejected since). Called before the upserts above so
+    a full recompute for a date never leaves orphaned rows behind.
+    """
+    if not keep_species_ids:
+        conn.execute("DELETE FROM daily_species_summary WHERE local_date = ?", (local_date,))
+        return
+    placeholders = ",".join("?" for _ in keep_species_ids)
+    conn.execute(
+        f"DELETE FROM daily_species_summary WHERE local_date = ? AND species_id NOT IN ({placeholders})",
+        (local_date, *keep_species_ids),
+    )
+
+
+def get_daily_species_summary(conn: sqlite3.Connection, local_date: str) -> list[sqlite3.Row]:
+    """All summary rows for one local date, joined with species for
+    display — ordered by first detection time (§16.5's default
+    slideshow ordering), left to callers that need a different order
+    to re-sort.
+    """
+    return conn.execute(
+        """
+        SELECT dss.*, s.scientific_name, s.common_name
+        FROM daily_species_summary dss
+        JOIN species s ON s.id = dss.species_id
+        WHERE dss.local_date = ?
+        ORDER BY dss.first_detected_at_utc ASC
+        """,
+        (local_date,),
+    ).fetchall()
+
+
+# -- slideshows / slideshow_items (§12.7/12.8, §29 Phase 5's builder) --------
+#
+# One slideshows row per local_date (UNIQUE), replaced in place on
+# every (re)build — same "recompute from source, not accumulate"
+# reasoning as daily_species_summary above: slideshow/builder.py is
+# safe to call repeatedly for the same date, and each call's
+# slideshow_items fully replace the previous set rather than piling up
+# stale rows next to fresh ones.
+
+
+def upsert_slideshow(
+    conn: sqlite3.Connection,
+    local_date: str,
+    status: str,
+    output_directory: str,
+    manifest_path: str,
+    species_count: int,
+    image_count: int,
+    generated_at_utc: str,
+) -> int:
+    """Returns the slideshow's id, whether this was an insert or an
+    update — callers need it either way to attach slideshow_items.
+    """
+    now = _now_iso()
+    conn.execute(
+        """
+        INSERT INTO slideshows (
+            local_date, status, output_directory, manifest_path,
+            species_count, image_count, generated_at_utc, created_at_utc, updated_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(local_date) DO UPDATE SET
+            status = excluded.status,
+            output_directory = excluded.output_directory,
+            manifest_path = excluded.manifest_path,
+            species_count = excluded.species_count,
+            image_count = excluded.image_count,
+            generated_at_utc = excluded.generated_at_utc,
+            updated_at_utc = excluded.updated_at_utc
+        """,
+        (local_date, status, output_directory, manifest_path, species_count, image_count, generated_at_utc, now, now),
+    )
+    return conn.execute("SELECT id FROM slideshows WHERE local_date = ?", (local_date,)).fetchone()["id"]
+
+
+def replace_slideshow_items(
+    conn: sqlite3.Connection,
+    slideshow_id: int,
+    items: list[dict],
+) -> None:
+    """Each dict: species_id, bird_image_id, display_order, title_text,
+    subtitle_text, detection_summary_text, rendered_file_path. Deletes
+    every existing row for slideshow_id first — a rebuild's item set
+    fully replaces the previous one rather than merging with it, since
+    display_order and which species qualify can both change between
+    builds for the same date.
+    """
+    conn.execute("DELETE FROM slideshow_items WHERE slideshow_id = ?", (slideshow_id,))
+    now = _now_iso()
+    conn.executemany(
+        """
+        INSERT INTO slideshow_items (
+            slideshow_id, species_id, bird_image_id, display_order,
+            title_text, subtitle_text, detection_summary_text, rendered_file_path, created_at_utc
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        [
+            (
+                slideshow_id,
+                item["species_id"],
+                item["bird_image_id"],
+                item["display_order"],
+                item["title_text"],
+                item["subtitle_text"],
+                item["detection_summary_text"],
+                item["rendered_file_path"],
+                now,
+            )
+            for item in items
+        ],
+    )
+
+
+def get_slideshow_by_date(conn: sqlite3.Connection, local_date: str) -> sqlite3.Row | None:
+    return conn.execute("SELECT * FROM slideshows WHERE local_date = ?", (local_date,)).fetchone()

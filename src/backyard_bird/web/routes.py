@@ -9,15 +9,19 @@ correct without any connection-pooling machinery.
 """
 from __future__ import annotations
 
+import io
+import random
 import shutil
 import socket
 import wave
+import zipfile
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from flask import Blueprint, Response, current_app, jsonify, render_template, request, send_from_directory, url_for
 
+from backyard_bird.aggregation.service import today_local_date
 from backyard_bird.audio.device_control import read_device_control, write_device_control
 from backyard_bird.audio.devices import list_input_devices
 from backyard_bird.audio.gain import GAIN_MAX, GAIN_MIN, read_gain_control, write_gain_control
@@ -40,6 +44,7 @@ from backyard_bird.database.repositories import (
     set_best_recording_highpass,
 )
 from backyard_bird.images.cache import species_slug
+from backyard_bird.slideshow.builder import build_daily_slideshow
 
 bp = Blueprint("dashboard", __name__)
 
@@ -486,6 +491,147 @@ def api_stats():
             "species": [_species_json(s, approved_by_name, best_recordings_by_name) for s in species],
         }
     )
+
+
+def _order_slides(slides: list[dict], order: str) -> list[dict]:
+    """§16.5's ordering modes, applied to the already-built slide
+    dicts from api_slideshow below.
+    """
+    if order == "most_recent":
+        return sorted(slides, key=lambda s: s["last_detected_at_utc"], reverse=True)
+    if order == "highest_confidence":
+        return sorted(slides, key=lambda s: s["highest_confidence"], reverse=True)
+    if order == "frequency":
+        return sorted(slides, key=lambda s: s["detection_count"], reverse=True)
+    if order == "alphabetical":
+        return sorted(slides, key=lambda s: s["common_name"].lower())
+    if order == "random":
+        shuffled = list(slides)
+        random.shuffle(shuffled)
+        return shuffled
+    return sorted(slides, key=lambda s: s["first_detected_at_utc"])  # "first_detection", the default
+
+
+@bp.route("/api/slideshow")
+def api_slideshow():
+    """Today's slideshow content for the dashboard's fullscreen preview
+    (§16, user request) — a browser-side companion to the physical
+    frame delivery pipeline (§29 Phase 5/6/7), not the pipeline itself.
+    Applies the same qualification rule §16.2 describes (highest
+    confidence at/above birdnet.slideshow_minimum_confidence, and an
+    approved image to show) as a live query against detections, the
+    same "since_utc=today" pattern /api/stats already uses — the
+    daily_species_summary table the Phase 5 aggregation job maintains
+    isn't wired to run on any schedule yet, so nothing here reads it.
+    """
+    conn = _connect()
+    try:
+        species = list_species_summary(
+            conn,
+            since_utc=_today_start_utc(),
+            min_confidence=current_app.config["SLIDESHOW_MIN_CONFIDENCE"],
+        )
+        approved_by_name = get_approved_images_by_scientific_name(conn)
+    finally:
+        conn.close()
+
+    tz = ZoneInfo(current_app.config["TIMEZONE"])
+    slides = []
+    for row in species:
+        image_url = _image_url(row.scientific_name, approved_by_name)
+        if image_url is None:
+            continue  # no approved image yet — can't be a slide's "representative photograph" (§16.2)
+        image_row = approved_by_name.get(row.scientific_name)
+        first_local = datetime.fromisoformat(row.first_detected_at_utc).astimezone(tz)
+        slides.append(
+            {
+                "common_name": row.common_name,
+                "scientific_name": row.scientific_name,
+                "image_url": image_url,
+                "detection_count": row.detection_count,
+                "highest_confidence": row.highest_confidence,
+                "first_detected_at_utc": row.first_detected_at_utc,
+                "last_detected_at_utc": row.last_detected_at_utc,
+                "first_detected_local_iso": first_local.isoformat(),
+                "attribution_text": image_row["attribution_text"] if image_row else None,
+            }
+        )
+
+    slides = _order_slides(slides, current_app.config["SLIDESHOW_ORDER"])
+    return jsonify(
+        {
+            "slides": slides,
+            "display_mode": current_app.config["SLIDESHOW_DISPLAY_MODE"],
+            "image_duration_seconds": current_app.config["SLIDESHOW_IMAGE_DURATION_SECONDS"],
+        }
+    )
+
+
+def _build_todays_slideshow():
+    """Shared by /api/slideshow/export.zip below and (differently)
+    /api/slideshow above — both present the same real build
+    (build_daily_slideshow(), the Phase 5 pipeline) a different way to
+    the browser.
+    """
+    conn = _connect()
+    try:
+        return build_daily_slideshow(
+            conn,
+            local_date=today_local_date(current_app.config["TIMEZONE"]),
+            tz_name=current_app.config["TIMEZONE"],
+            order=current_app.config["SLIDESHOW_ORDER"],
+            display_mode=current_app.config["SLIDESHOW_DISPLAY_MODE"],
+            slideshow_minimum_confidence=current_app.config["SLIDESHOW_MIN_CONFIDENCE"],
+            output_root=Path(current_app.config["SLIDESHOW_OUTPUT_ROOT"]),
+        )
+    finally:
+        conn.close()
+
+
+@bp.route("/api/slideshow/export.zip")
+def api_slideshow_export_zip():
+    """"Save to SD" (§29 Phase 5's builder, user request): builds
+    today's slideshow and returns it as a single ZIP download —
+    landing in the viewer's own Downloads folder, on whatever device
+    the dashboard is open on, not the Pi itself. Entries are stored
+    under a `<local_date>/` prefix inside the archive, so extracting it
+    (a single right-click, no other tool needed) produces exactly that
+    dated folder, ready to copy onto an SD card or into a connected
+    frame's DCIM folder with the viewer's own file manager (§17.5's
+    manual fallback, reached over the network).
+
+    Deliberately one file, one download: two earlier approaches both
+    hit real platform limits before landing here — the File System
+    Access API's folder picker can't target MTP-connected devices
+    (which is how the actual frame exposes storage over USB) at all,
+    and downloading each file individually with a subfolder path in
+    its `download` attribute turned out not to create real folders in
+    Chrome (it sanitizes the slashes into underscores) and tripped a
+    disruptive "this site wants to download multiple files" prompt
+    partway through a batch. A single ZIP sidesteps both: nothing here
+    needs a filesystem handle to anything but Downloads, and one
+    download never triggers the multi-file gate.
+    """
+    result = _build_todays_slideshow()
+    if not result.manifest.items:
+        return jsonify({"error": "No qualifying species detected yet today."}), 404
+
+    local_date = result.manifest.local_date
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for item in result.manifest.items:
+            zf.write(item.rendered_file_path, f"{local_date}/{item.rendered_file_path.name}")
+        zf.write(result.slideshow_directory / "manifest.json", f"{local_date}/manifest.json")
+        zf.write(result.slideshow_directory / "README.txt", f"{local_date}/README.txt")
+
+    filename = f"Birdbrain Slideshow {local_date}.zip"
+    return Response(
+        buffer.getvalue(),
+        mimetype="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 
 
 @bp.route("/api/detections/recent")

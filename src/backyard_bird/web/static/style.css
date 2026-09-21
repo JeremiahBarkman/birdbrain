@@ -954,3 +954,99 @@ td .scientific {
     max-width: none;
   }
 }
+
+/* Fullscreen slideshow preview (§16, user request). Dark regardless of
+   light/dark dashboard theme — this is meant to read like the physical
+   frame's own display, not like the rest of the page. */
+.slideshow-overlay {
+  position: fixed;
+  inset: 0;
+  background: #000;
+  z-index: 2000;
+  cursor: none;
+}
+
+.slideshow-overlay[hidden] {
+  display: none;
+}
+
+.slideshow-slide {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.slideshow-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Bottom gradient scrim, same reasoning as the frame renderer's own
+   (slideshow/renderer.py's _bottom_scrim): keeps text readable over
+   any base photo without a hard-edged bar across it. */
+.slideshow-scrim {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 42%;
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.75), rgba(0, 0, 0, 0));
+  pointer-events: none;
+}
+
+.slideshow-text {
+  position: absolute;
+  left: 6%;
+  right: 6%;
+  bottom: 7%;
+  color: #fff;
+  text-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
+}
+
+.slideshow-common-name {
+  font-size: clamp(1.75rem, 4vw, 3.25rem);
+  font-weight: 700;
+}
+
+.slideshow-scientific-name {
+  font-size: clamp(1rem, 2vw, 1.6rem);
+  font-style: italic;
+  color: #e5e5e5;
+  margin-top: 0.25rem;
+}
+
+.slideshow-info {
+  font-size: clamp(0.9rem, 1.5vw, 1.25rem);
+  color: #e0e0e0;
+  margin-top: 0.75rem;
+}
+
+.slideshow-info[hidden],
+.slideshow-attribution[hidden] {
+  display: none;
+}
+
+.slideshow-attribution {
+  position: absolute;
+  right: 6%;
+  bottom: 3%;
+  color: #ccc;
+  font-size: 0.85rem;
+  text-shadow: 0 1px 4px rgba(0, 0, 0, 0.6);
+}
+
+.slideshow-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #fff;
+  font-size: 1.5rem;
+}
+
+.slideshow-empty[hidden] {
+  display: none;
+}
