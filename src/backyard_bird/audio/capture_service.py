@@ -9,9 +9,22 @@ on network access (§20.1) — it only touches PortAudio and the local
 filesystem.
 
 The realtime PortAudio callback (`_on_audio`) only ever copies data
-into a queue — all segmenting, file I/O, and retry logic happens on
-the calling thread in `run()`, so a slow disk or a full queue can
-never block or glitch the audio callback itself.
+into a queue — all segmenting and retry logic happens on the calling
+thread in `run()`, so a slow disk or a full queue can never block or
+glitch the audio callback itself. Segment *file I/O* itself is handed
+off to a dedicated writer thread (`_segment_writer_loop`) rather than
+run inline in that same loop: writing a completed segment is a
+multi-megabyte synchronous disk write, and it used to happen on the
+exact thread that also broadcasts chunks to the "Listen Live" relay —
+so an occasional slow SD-card write (confirmed live: Raspberry Pi SD
+cards routinely spike from ~10ms to well over a second under
+wear-leveling/GC) stalled that thread and produced an audible dropout
+in Listen Live every time a ~27s segment happened to complete during
+one. Moving the write off that thread means Listen Live keeps flowing
+even when a write stalls; `run()` still blocks until every queued
+write has completed (or failed-and-logged) before returning, so
+callers and tests see exactly the same "N segments in, N files on
+disk" guarantee as before.
 
 Also writes a live mic-status/level file (audio/levels.py) roughly
 once a second, for the dashboard's live level meter (user request,
@@ -90,6 +103,16 @@ class CaptureService:
         self._live_monitor_server: LiveMonitorServer | None = None
         self._stop_event = threading.Event()
         self._chunk_queue: queue.Queue[np.ndarray] = queue.Queue(maxsize=_QUEUE_MAX_CHUNKS)
+        # Unbounded, deliberately unlike _chunk_queue above — a raw
+        # chunk not yet segmented is fine to drop under backpressure
+        # (there's more where it came from a moment later), but a
+        # completed Segment queued here represents 27-30s of audio
+        # that will never exist again if it isn't written. Writes are
+        # normally near-instant (see module docstring), so this only
+        # ever holds more than one item during an actual slow-disk
+        # stall.
+        self._segment_write_queue: queue.Queue[Segment | None] = queue.Queue()
+        self._segment_writer_thread: threading.Thread | None = None
         self._last_retention_sweep = 0.0
         self._last_status_write = 0.0
         self._last_gain_check = 0.0
@@ -128,6 +151,15 @@ class CaptureService:
         self.incoming_dir.mkdir(parents=True, exist_ok=True)
         segments_written = 0
         attempt = 0
+
+        # Started once for the service's whole lifetime, not per
+        # reconnect attempt below — see module docstring for why
+        # segment writes happen here rather than inline in
+        # _capture_until_error's loop.
+        self._segment_writer_thread = threading.Thread(
+            target=self._segment_writer_loop, name="segment-writer", daemon=True
+        )
+        self._segment_writer_thread.start()
 
         # Started once for the service's whole lifetime, not per
         # reconnect attempt below — it's independent of any particular
@@ -181,6 +213,14 @@ class CaptureService:
             self._live_monitor_server.shutdown()
             self._live_monitor_server.server_close()
 
+        # Sentinel + join: block until every segment queued during the
+        # loop above has actually been written (or failed-and-logged),
+        # so callers/tests see the same "N segments in, N files on
+        # disk, nothing left as .partial" guarantee run() always gave
+        # before writes moved off this thread.
+        self._segment_write_queue.put(None)
+        self._segment_writer_thread.join()
+
         logger.info(
             "capture_stopped",
             extra={"event": "capture_stopped", "segments_written": segments_written},
@@ -189,6 +229,26 @@ class CaptureService:
         return segments_written
 
     # -- internals ---------------------------------------------------
+
+    def _segment_writer_loop(self) -> None:
+        """Runs on its own thread for the lifetime of run() — see
+        module docstring. A single worker draining a FIFO queue, so
+        segments are still written in the order they were produced;
+        just no longer on the same thread that also has to keep
+        pulling chunks off _chunk_queue and broadcasting them live.
+        """
+        while True:
+            segment = self._segment_write_queue.get()
+            if segment is None:  # sentinel: run() is shutting down
+                return
+            try:
+                self._write_segment(segment)
+            except Exception as exc:  # noqa: BLE001 — a write failure must not kill this thread or capture
+                logger.error(
+                    "segment_write_failed",
+                    extra={"event": "segment_write_failed", "sequence": segment.sequence, "error": str(exc)},
+                    exc_info=True,
+                )
 
     def _on_audio(self, indata: np.ndarray, frames: int, time_info: object, status: object) -> None:
         if status:
@@ -305,7 +365,12 @@ class CaptureService:
                         )
 
                 for segment in segmenter.push(chunk):
-                    self._write_segment(segment)
+                    # Handed to the writer thread rather than written
+                    # inline — see module docstring. `written` counts
+                    # segments *produced* (queued for writing), same as
+                    # it always has; run() doesn't return until every
+                    # one of them is actually flushed to disk.
+                    self._segment_write_queue.put(segment)
                     written += 1
                     if max_segments is not None and already_written + written >= max_segments:
                         return written

@@ -444,6 +444,96 @@ def test_capture_relays_real_audio_to_a_connected_live_monitor_client(
         run_thread.join(timeout=5)
 
 
+def test_slow_segment_write_does_not_stall_live_monitor_broadcast(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Regression test for a live-reported bug: Listen Live audio would
+    drop out for a second or two, roughly every ~27s (segment cadence).
+    Root cause was _write_segment's synchronous disk write running on
+    the same thread that broadcasts chunks to the relay — a slow write
+    (SD-card stall) blocked that thread from reaching the next already-
+    queued chunk's broadcast() call. Segment writes now happen on a
+    separate writer thread (_segment_writer_loop); this proves a slow
+    write no longer delays broadcasting the chunks queued behind it.
+    """
+    import socket
+    import threading
+    import time as time_module
+
+    fake_device = SimpleNamespace(index=0, name="Fake Mic")
+    monkeypatch.setattr(capture_service_module, "find_input_device", lambda name: fake_device)
+
+    # Same 500-samples/17-sample-chunk fixture as
+    # test_capture_run_writes_expected_segments — 6 complete segments,
+    # so there are chunks broadcast both before and after segment 0
+    # completes (and its write is artificially slowed below).
+    all_samples = np.arange(500, dtype=np.int16).reshape(-1, 1)
+    chunks = [all_samples[i : i + 17] for i in range(0, 500, 17)]
+    ready_event = threading.Event()
+    monkeypatch.setattr(
+        capture_service_module.sd,
+        "InputStream",
+        lambda **kwargs: _FakeInputStream(chunks, ready_event=ready_event, **kwargs),
+    )
+
+    service = CaptureService(_audio_config(), tmp_path / "incoming", live_monitor_port=0)
+
+    write_delay_seconds = 0.5
+    original_write_segment = service._write_segment
+
+    def _slow_write_segment(segment):
+        if segment.sequence == 0:
+            time_module.sleep(write_delay_seconds)  # simulate a stalled SD-card write
+        original_write_segment(segment)
+
+    monkeypatch.setattr(service, "_write_segment", _slow_write_segment)
+
+    run_thread = threading.Thread(target=service.run, kwargs={"max_segments": 6})
+    run_thread.start()
+    try:
+        for _ in range(200):
+            if service._live_monitor_server is not None:
+                break
+            time_module.sleep(0.01)
+        assert service._live_monitor_server is not None, "relay server never started"
+        port = service._live_monitor_server.server_address[1]
+
+        client = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            for _ in range(200):
+                if service._live_monitor_server.has_clients():
+                    break
+                time_module.sleep(0.01)
+            assert service._live_monitor_server.has_clients(), "server never registered the client"
+
+            ready_event.set()  # let the fake stream deliver every chunk now
+
+            total_expected_bytes = sum(len(c.astype(np.int16).tobytes()) for c in chunks)
+            client.settimeout(5)
+            received = b""
+            t_start = time_module.monotonic()
+            while len(received) < total_expected_bytes:
+                more = client.recv(65536)
+                if not more:
+                    break
+                received += more
+            elapsed = time_module.monotonic() - t_start
+        finally:
+            client.close()
+    finally:
+        ready_event.set()  # in case an assertion above failed before this ran
+        run_thread.join(timeout=5)
+
+    # Every chunk arrived well under the artificial write delay — if the
+    # slow write still blocked the broadcast loop (the bug), receiving
+    # everything would take at least write_delay_seconds.
+    assert elapsed < write_delay_seconds / 2
+
+    wav_files = sorted((tmp_path / "incoming").glob("*.wav"))
+    assert len(wav_files) == 6
+    assert not list((tmp_path / "incoming").glob("*.partial"))
+
+
 def test_capture_without_live_monitor_port_does_not_start_a_server(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
