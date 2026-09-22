@@ -324,6 +324,59 @@ def list_species_summary(
     ]
 
 
+@dataclass(frozen=True)
+class DetectionTimestampRow:
+    scientific_name: str
+    common_name: str
+    detected_at_utc: str
+
+
+def list_detection_timestamps(
+    conn: sqlite3.Connection,
+    since_utc: datetime | None = None,
+    until_utc: datetime | None = None,
+    min_confidence: float | None = None,
+) -> list[DetectionTimestampRow]:
+    """Every non-duplicate, non-rejected detection's timestamp and
+    species, filtered identically to list_species_summary above — the
+    raw material for the dashboard's hour-of-day heatmap (§13's
+    "Hour-of-day activity" query). Returned one row per detection
+    rather than pre-aggregated, since bucketing into *local* hours
+    needs ZoneInfo conversion the caller does in Python, not something
+    SQLite can do against an arbitrary IANA zone.
+    """
+    clauses = ["d.is_duplicate = 0", "(d.review_status IS NULL OR d.review_status != 'rejected')"]
+    params: list[object] = []
+    if since_utc is not None:
+        clauses.append("d.detected_at_utc >= ?")
+        params.append(since_utc.isoformat())
+    if until_utc is not None:
+        clauses.append("d.detected_at_utc < ?")
+        params.append(until_utc.isoformat())
+    if min_confidence is not None:
+        clauses.append("d.confidence >= ?")
+        params.append(min_confidence)
+
+    where = f"WHERE {' AND '.join(clauses)}"
+    rows = conn.execute(
+        f"""
+        SELECT s.scientific_name, s.common_name, d.detected_at_utc
+        FROM detections d
+        JOIN species s ON s.id = d.species_id
+        {where}
+        """,
+        params,
+    ).fetchall()
+    return [
+        DetectionTimestampRow(
+            scientific_name=r["scientific_name"],
+            common_name=r["common_name"],
+            detected_at_utc=r["detected_at_utc"],
+        )
+        for r in rows
+    ]
+
+
 # -- species moderation: killing a false/erroneous species from the dashboard ---
 #
 # Two options, both scoped to the whole species (matching the

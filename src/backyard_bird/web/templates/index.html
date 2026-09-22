@@ -22,6 +22,7 @@
       <button id="live-monitor-btn" class="filter-btn mic-status-listen" type="button">🔊 Listen Live</button>
       <button id="slideshow-btn" class="filter-btn" type="button">▶ Slideshow</button>
       <button id="save-sd-btn" class="filter-btn" type="button">💾 Save Slides</button>
+      <button id="heatmap-view-btn" class="filter-btn" type="button">🔥 Heatmap</button>
     </div>
     <div class="level-meter" role="meter" aria-label="Microphone input level" aria-valuemin="0" aria-valuemax="100">
       <div class="level-meter-fill" id="level-meter-fill"></div>
@@ -110,7 +111,7 @@
       <button id="today-filter-btn" class="filter-btn" type="button">Today</button>
       <button id="clear-filters-btn" class="filter-btn filter-btn-clear" type="button">Clear filters</button>
     </div>
-    <div class="table-scroll">
+    <div class="table-scroll" id="species-table-wrap">
       <table id="species-table">
         <thead>
           <tr>
@@ -131,6 +132,22 @@
       </table>
     </div>
     <button id="species-show-more" class="show-more-btn" type="button" hidden>See more</button>
+
+    <div class="heatmap-wrap" id="species-heatmap-wrap" hidden>
+      <div class="heatmap-legend">
+        <span>Low</span>
+        <span class="heatmap-legend-bar"></span>
+        <span>High</span>
+        <span class="heatmap-hint">Hover a cell for details</span>
+      </div>
+      <div class="heatmap-scroll">
+        <table id="species-heatmap">
+          <thead id="species-heatmap-head"></thead>
+          <tbody id="species-heatmap-body"></tbody>
+        </table>
+      </div>
+      <p class="heatmap-empty" id="species-heatmap-empty" hidden>No detections yet.</p>
+    </div>
   </section>
 
   <div class="image-modal" id="image-modal" hidden>

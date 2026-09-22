@@ -18,6 +18,11 @@ const SPECIES_PAGE_INCREMENT = 20;
 let visibleSpeciesCount = SPECIES_PAGE_SIZE;
 let currentSpecies = [];
 
+// Whether the species-heatmap view (below) is showing instead of the
+// table — module-level for the same reason as visibleSpeciesCount: it
+// must survive the 5s auto-refresh rather than resetting every poll.
+let heatmapActive = false;
+
 // Which recording <audio> elements are currently playing — see the
 // guard at the top of renderSpeciesTable() for why this exists.
 const playingAudioElements = new Set();
@@ -283,7 +288,11 @@ function renderSpeciesTable() {
 
   const visible = currentSpecies.slice(0, visibleSpeciesCount);
   tbody.innerHTML = visible.map(speciesRowHtml).join("");
-  showMoreBtn.hidden = visibleSpeciesCount >= currentSpecies.length;
+  // heatmapActive is checked here (not just at toggle time) because
+  // this function also runs on every 5s poll while the heatmap view is
+  // showing — without this, that poll would silently un-hide "See
+  // more" behind the heatmap.
+  showMoreBtn.hidden = heatmapActive || visibleSpeciesCount >= currentSpecies.length;
 }
 
 // Appends only the newly revealed rows rather than calling
@@ -304,18 +313,141 @@ document.getElementById("species-show-more").addEventListener("click", () => {
   document.getElementById("species-show-more").hidden = visibleSpeciesCount >= currentSpecies.length;
 });
 
+// Shared by poll() and pollHeatmap() below — both filter the same
+// underlying detections the same way (min_confidence, date), just
+// aggregate the result differently server-side.
+function currentFilterParams() {
+  const params = new URLSearchParams({ min_confidence: (minConfidencePercent / 100).toFixed(2) });
+  if (filterDate) params.set("date", filterDate);
+  return params;
+}
+
 async function poll() {
   try {
-    const params = new URLSearchParams({ min_confidence: (minConfidencePercent / 100).toFixed(2) });
-    if (filterDate) params.set("date", filterDate);
-    const response = await fetch(`/api/stats?${params}`);
+    const response = await fetch(`/api/stats?${currentFilterParams()}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     renderStats(await response.json());
+    if (heatmapActive) pollHeatmap();
   } catch (err) {
     document.getElementById("last-updated").textContent = "Update failed — retrying…";
     console.error("dashboard poll failed:", err);
   }
 }
+
+// Species-activity-by-hour heatmap ("🔥 Heatmap" button, user
+// request): an alternate view of the same filtered species table
+// above — same min_confidence/date filters (currentFilterParams()),
+// just bucketed by /api/heatmap into local hours of day instead of
+// shown as a flat list. Toggling swaps which of #species-table-wrap /
+// #species-heatmap-wrap is visible; the filters themselves stay put.
+const heatmapViewBtn = document.getElementById("heatmap-view-btn");
+const speciesTableWrap = document.getElementById("species-table-wrap");
+const heatmapWrapEl = document.getElementById("species-heatmap-wrap");
+
+function hexToRgb(hex) {
+  const n = parseInt(hex.trim().replace("#", ""), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+// Read fresh on every render (not cached) so a live OS theme switch
+// (prefers-color-scheme) is picked up automatically, the same way the
+// CSS variables themselves already are.
+function heatmapColorStops() {
+  const style = getComputedStyle(document.documentElement);
+  return ["--heat-low", "--heat-mid", "--heat-high"].map((name) =>
+    hexToRgb(style.getPropertyValue(name))
+  );
+}
+
+function heatCellColor(value, maxValue, stops) {
+  if (!value) return "var(--heat-empty)";
+  // Logarithmic scaling, same reasoning as the species table's own
+  // confidence-independent counts: a count of 1 shouldn't disappear
+  // next to a count of 50.
+  const intensity = Math.log1p(value) / Math.log1p(maxValue || 1);
+  const position = intensity * (stops.length - 1);
+  const startIndex = Math.min(Math.floor(position), stops.length - 2);
+  const fraction = position - startIndex;
+  const start = stops[startIndex];
+  const end = stops[startIndex + 1];
+  const rgb = start.map((channel, i) => Math.round(channel + (end[i] - channel) * fraction));
+  return `rgb(${rgb.join(", ")})`;
+}
+
+function heatmapHourLabel(hour) {
+  return String(hour).padStart(2, "0");
+}
+
+function renderHeatmap(data) {
+  const head = document.getElementById("species-heatmap-head");
+  const body = document.getElementById("species-heatmap-body");
+  const table = document.getElementById("species-heatmap");
+  const emptyEl = document.getElementById("species-heatmap-empty");
+
+  const species = data.species || [];
+
+  if (!species.length) {
+    head.replaceChildren();
+    body.replaceChildren();
+    table.hidden = true;
+    emptyEl.textContent = filtersActive() ? "No species match these filters." : "No detections yet.";
+    emptyEl.hidden = false;
+    return;
+  }
+  table.hidden = false;
+  emptyEl.hidden = true;
+
+  const maxValue = Math.max(...species.flatMap((s) => s.hours), 1);
+  const stops = heatmapColorStops();
+
+  head.innerHTML = `<tr><th>Species</th>${Array.from(
+    { length: 24 },
+    (_, hour) => `<th>${heatmapHourLabel(hour)}</th>`
+  ).join("")}</tr>`;
+
+  body.innerHTML = species
+    .map((s, index) => {
+      const cells = s.hours
+        .map((value, hour) => {
+          const color = heatCellColor(value, maxValue, stops);
+          const tooltip =
+            `${s.common_name}\n` +
+            `${heatmapHourLabel(hour)}:00–${heatmapHourLabel((hour + 1) % 24)}:00\n` +
+            `${value} detection${value === 1 ? "" : "s"}`;
+          return `<td class="heat-cell" style="background:${color}" title="${tooltip.replace(/"/g, "&quot;")}" aria-label="${s.common_name}, hour ${hour}, ${value} detections"></td>`;
+        })
+        .join("");
+      return `
+        <tr>
+          <th class="heatmap-species-name">
+            <span class="heatmap-rank">${index + 1}</span>
+            <span>${s.common_name}</span>
+          </th>
+          ${cells}
+        </tr>`;
+    })
+    .join("");
+}
+
+async function pollHeatmap() {
+  try {
+    const response = await fetch(`/api/heatmap?${currentFilterParams()}`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    renderHeatmap(await response.json());
+  } catch (err) {
+    console.error("heatmap poll failed:", err);
+  }
+}
+
+heatmapViewBtn.addEventListener("click", () => {
+  heatmapActive = !heatmapActive;
+  heatmapViewBtn.classList.toggle("active", heatmapActive);
+  heatmapViewBtn.textContent = heatmapActive ? "📋 Table" : "🔥 Heatmap";
+  speciesTableWrap.hidden = heatmapActive;
+  heatmapWrapEl.hidden = !heatmapActive;
+  document.getElementById("species-show-more").hidden = heatmapActive || visibleSpeciesCount >= currentSpecies.length;
+  if (heatmapActive) pollHeatmap();
+});
 
 // Image popup: a single delegated listener on <body> rather than
 // binding to each <img> — the recent-detection image and every

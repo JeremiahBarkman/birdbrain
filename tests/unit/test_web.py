@@ -160,6 +160,76 @@ def test_api_stats_malformed_date_falls_back_to_unfiltered(client) -> None:
     assert len(response.get_json()["species"]) == 1
 
 
+def test_index_page_includes_heatmap_markup(client) -> None:
+    # Regression check for the species-activity-by-hour heatmap view:
+    # the toggle button (in the same row as Slideshow/Save Slides) and
+    # the elements dashboard.js's renderHeatmap() wires up must both
+    # actually be present in the rendered page.
+    response = client.get("/")
+    assert b'id="heatmap-view-btn"' in response.data
+    assert b'id="species-heatmap-wrap"' in response.data
+    assert b'id="species-heatmap-head"' in response.data
+    assert b'id="species-heatmap-body"' in response.data
+
+
+def test_api_heatmap_buckets_seeded_detection_into_its_local_hour(client) -> None:
+    # The fixture's detection is "5 minutes ago" in UTC and the test
+    # app's timezone is UTC (_app_config above), so its local hour is
+    # just datetime.now(UTC).hour.
+    expected_hour = datetime.now(timezone.utc).hour
+
+    response = client.get("/api/heatmap")
+    assert response.status_code == 200
+    data = response.get_json()
+
+    assert data["total_detections"] == 1
+    assert len(data["species"]) == 1
+    species = data["species"][0]
+    assert species["common_name"] == "Black-capped Chickadee"
+    assert len(species["hours"]) == 24
+    assert species["hours"][expected_hour] == 1
+    assert species["total"] == 1
+    assert sum(species["hours"]) == 1
+
+
+def test_api_heatmap_min_confidence_filters(client) -> None:
+    # Seeded detection is 0.81 confidence, same filter semantics as
+    # /api/stats' species table.
+    above = client.get("/api/heatmap?min_confidence=0.90").get_json()
+    assert above["species"] == []
+    assert above["total_detections"] == 0
+
+    below = client.get("/api/heatmap?min_confidence=0.5").get_json()
+    assert len(below["species"]) == 1
+
+
+def test_api_heatmap_date_filter(client) -> None:
+    today = datetime.now(timezone.utc).date().isoformat()
+    yesterday = (datetime.now(timezone.utc).date() - timedelta(days=1)).isoformat()
+
+    todays = client.get(f"/api/heatmap?date={today}").get_json()
+    assert len(todays["species"]) == 1
+
+    others = client.get(f"/api/heatmap?date={yesterday}").get_json()
+    assert others["species"] == []
+
+
+def test_api_heatmap_with_empty_database(tmp_path: Path) -> None:
+    conn = get_connection(tmp_path / "database" / "birds.sqlite3")
+    apply_migrations(conn, MIGRATIONS_DIR)
+    conn.close()
+
+    app = create_app(_app_config(tmp_path))
+    app.testing = True
+    with app.test_client() as c:
+        response = c.get("/api/heatmap")
+
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data["species"] == []
+    assert data["total_detections"] == 0
+
+
 def test_api_slideshow_includes_qualifying_species(client) -> None:
     response = client.get("/api/slideshow")
     assert response.status_code == 200

@@ -21,6 +21,7 @@ from backyard_bird.database.repositories import (
     insert_bird_image,
     insert_detection,
     list_daily_detection_aggregates,
+    list_detection_timestamps,
     list_detections,
     list_species_needing_image_search,
     list_species_summary,
@@ -269,6 +270,50 @@ def test_list_species_summary_filters_by_confidence_and_date(conn: sqlite3.Conne
     # a lower number than the species' just-arrived detection.
     assert chickadee_today.detection_count == 2
     assert chickadee_today.highest_confidence == 0.90
+
+
+def test_list_detection_timestamps_filters_like_species_summary(conn: sqlite3.Connection) -> None:
+    # Same filter semantics as list_species_summary above (confidence,
+    # date range, duplicates, rejected) — this is the raw material the
+    # dashboard's hour-of-day heatmap buckets client-of-SQL, so it must
+    # obey the same rules or a filtered heatmap and a filtered table
+    # would silently disagree about which detections count.
+    segment_id = _insert_segment(conn)
+    species_id = get_or_create_species(conn, "Poecile atricapillus", "Black-capped Chickadee")
+    with conn:
+        low_id = insert_detection(
+            conn, segment_id, species_id,
+            datetime(2026, 8, 17, 12, 0, 0, tzinfo=timezone.utc),
+            5.0, 8.0, 0.50, 1.0, None, None, False, None,
+        )
+        insert_detection(
+            conn, segment_id, species_id,
+            datetime(2026, 8, 18, 9, 0, 0, tzinfo=timezone.utc),
+            5.0, 8.0, 0.90, 1.0, None, None, False, None,
+        )
+        # A duplicate and a rejected detection — neither should ever surface.
+        insert_detection(
+            conn, segment_id, species_id,
+            datetime(2026, 8, 18, 9, 0, 1, tzinfo=timezone.utc),
+            5.0, 8.0, 0.90, 1.0, None, None, True, low_id,
+        )
+        conn.execute(
+            "UPDATE detections SET review_status = 'rejected' WHERE id = ?", (low_id,)
+        )
+
+    all_rows = list_detection_timestamps(conn)
+    assert [r.detected_at_utc for r in all_rows] == ["2026-08-18T09:00:00+00:00"]
+
+    filtered = list_detection_timestamps(conn, min_confidence=0.95)
+    assert filtered == []
+
+    ranged = list_detection_timestamps(
+        conn,
+        since_utc=datetime(2026, 8, 18, 0, 0, 0, tzinfo=timezone.utc),
+        until_utc=datetime(2026, 8, 19, 0, 0, 0, tzinfo=timezone.utc),
+    )
+    assert len(ranged) == 1
+    assert ranged[0].common_name == "Black-capped Chickadee"
 
 
 def _backdate_last_verified(conn: sqlite3.Connection, species_id: int, days_ago: int) -> None:

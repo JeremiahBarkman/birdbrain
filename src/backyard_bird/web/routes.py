@@ -37,6 +37,7 @@ from backyard_bird.database.repositories import (
     get_best_recordings_by_scientific_name,
     get_overall_stats,
     get_species_id_by_scientific_name,
+    list_detection_timestamps,
     list_detections,
     list_species_summary,
     reject_species_detections,
@@ -450,12 +451,11 @@ def monitor_live():
     )
 
 
-@bp.route("/api/stats")
-def api_stats():
-    # These two filter the species table only (min_confidence, date) —
-    # the headline stat cards and "most recent" card above it stay
-    # all-time/today-fixed regardless, so the summary numbers never
-    # shift under a filter the user might not have noticed they set.
+def _parse_species_filters() -> tuple[float | None, datetime | None, datetime | None]:
+    """min_confidence/date query-param parsing shared by /api/stats and
+    /api/heatmap — both filter the same underlying detections the same
+    way (§13), just aggregate the result differently.
+    """
     min_confidence = request.args.get("min_confidence", type=float)
     if min_confidence is not None:
         min_confidence = max(0.0, min(1.0, min_confidence))
@@ -467,6 +467,17 @@ def api_stats():
             since_utc, until_utc = _day_range_utc(date_str)
         except ValueError:
             pass  # malformed date — ignore rather than error a status page over it
+
+    return min_confidence, since_utc, until_utc
+
+
+@bp.route("/api/stats")
+def api_stats():
+    # These two filter the species table only (min_confidence, date) —
+    # the headline stat cards and "most recent" card above it stay
+    # all-time/today-fixed regardless, so the summary numbers never
+    # shift under a filter the user might not have noticed they set.
+    min_confidence, since_utc, until_utc = _parse_species_filters()
 
     conn = _connect()
     try:
@@ -491,6 +502,46 @@ def api_stats():
             "species": [_species_json(s, approved_by_name, best_recordings_by_name) for s in species],
         }
     )
+
+
+@bp.route("/api/heatmap")
+def api_heatmap():
+    """Species-activity-by-hour view (dashboard, user request): the
+    same min_confidence/date filters as the species table above
+    (_parse_species_filters), bucketed into local hours of day (§13's
+    "Hour-of-day activity" query) instead of one row per species.
+    Bucketing happens here rather than in SQL since it needs local-time
+    conversion (ZoneInfo) against the configured timezone, the same
+    thing _day_range_utc already does for the date filter itself.
+    """
+    min_confidence, since_utc, until_utc = _parse_species_filters()
+
+    conn = _connect()
+    try:
+        rows = list_detection_timestamps(
+            conn, since_utc=since_utc, until_utc=until_utc, min_confidence=min_confidence
+        )
+    finally:
+        conn.close()
+
+    tz = ZoneInfo(current_app.config["TIMEZONE"])
+    species_by_name: dict[str, dict] = {}
+    for row in rows:
+        try:
+            local_hour = datetime.fromisoformat(row.detected_at_utc).astimezone(tz).hour
+        except ValueError:
+            continue  # malformed timestamp — drop it from the heatmap rather than error the whole view
+        entry = species_by_name.setdefault(
+            row.scientific_name,
+            {"common_name": row.common_name, "scientific_name": row.scientific_name, "hours": [0] * 24},
+        )
+        entry["hours"][local_hour] += 1
+
+    species = sorted(species_by_name.values(), key=lambda e: sum(e["hours"]), reverse=True)
+    for entry in species:
+        entry["total"] = sum(entry["hours"])
+
+    return jsonify({"species": species, "total_detections": sum(e["total"] for e in species)})
 
 
 def _order_slides(slides: list[dict], order: str) -> list[dict]:

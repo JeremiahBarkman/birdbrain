@@ -7,6 +7,17 @@
   --accent: #3f7d5c;
   --accent-soft: #e7f2ec;
   --shadow: 0 1px 3px rgba(0, 0, 0, 0.06);
+  /* Species-heatmap sequential scale (§13's "Hour-of-day activity"
+     view): one hue (the dashboard's own accent green), light to dark,
+     rather than the rainbow scale a generic heatmap mockup might use —
+     "low" recedes toward the page background, "high" saturates toward
+     a deep green. Zero-count cells use --heat-empty (the page
+     background) so an unvisited hour reads as blank, not as the low
+     end of the ramp. */
+  --heat-empty: var(--bg);
+  --heat-low: #cdeadd;
+  --heat-mid: #5fae82;
+  --heat-high: #1d4b32;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -19,6 +30,14 @@
     --accent: #6fbd93;
     --accent-soft: #223229;
     --shadow: 0 1px 3px rgba(0, 0, 0, 0.4);
+    /* Same single hue, stepped the other direction: low stays near
+       the dark surface, high brightens — reads as "more activity" on
+       a dark background the same way the light scale darkens for it
+       on a light one. */
+    --heat-empty: var(--bg);
+    --heat-low: #24422f;
+    --heat-mid: #4f9871;
+    --heat-high: #baf0d1;
   }
 }
 
@@ -713,6 +732,120 @@ td .scientific {
 }
 
 .show-more-btn[hidden] {
+  display: none;
+}
+
+/* Species-activity-by-hour heatmap (§13, dashboard "🔥 Heatmap" view) —
+   an alternate rendering of the same filtered species-table data
+   (dashboard.js toggles this against #species-table-wrap), not a
+   separate filter surface. */
+.heatmap-wrap {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  box-shadow: var(--shadow);
+  padding: 1rem;
+}
+
+.heatmap-wrap[hidden] {
+  display: none;
+}
+
+.heatmap-legend {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.75rem;
+  color: var(--text-muted);
+  font-size: 0.8rem;
+}
+
+.heatmap-legend-bar {
+  width: 120px;
+  height: 8px;
+  border-radius: 20px;
+  background: linear-gradient(90deg, var(--heat-low), var(--heat-mid), var(--heat-high));
+}
+
+.heatmap-hint {
+  margin-left: auto; /* same right-pinning trick as .filter-btn-clear/.mic-status-listen */
+}
+
+.heatmap-scroll {
+  overflow-x: auto;
+}
+
+#species-heatmap {
+  border-collapse: separate;
+  border-spacing: 3px;
+  font-size: 0.9rem;
+}
+
+#species-heatmap thead th {
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  text-align: center;
+  white-space: nowrap;
+  border-bottom: none;
+  padding: 0.15rem 0.3rem;
+}
+
+#species-heatmap thead th:first-child {
+  min-width: 170px;
+  text-align: left;
+}
+
+.heatmap-species-name {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+  text-align: left;
+  font-size: 0.85rem;
+  font-weight: 600;
+  color: var(--text);
+  border-bottom: none;
+  padding: 0.15rem 0.5rem 0.15rem 0.3rem;
+}
+
+.heatmap-rank {
+  display: inline-grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: var(--accent-soft);
+  color: var(--text-muted);
+  font-size: 0.65rem;
+  flex-shrink: 0;
+}
+
+.heat-cell {
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  border-bottom: none;
+  padding: 0;
+  border-radius: 5px;
+  cursor: default;
+  transition: transform 100ms ease, outline 100ms ease;
+}
+
+.heat-cell:hover {
+  outline: 2px solid var(--accent);
+  transform: scale(1.15);
+  position: relative;
+  z-index: 1;
+}
+
+.heatmap-empty {
+  padding: 2rem;
+  text-align: center;
+  color: var(--text-muted);
+}
+
+.heatmap-empty[hidden] {
   display: none;
 }
 
