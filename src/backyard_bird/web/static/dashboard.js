@@ -479,17 +479,33 @@ document.body.addEventListener("click", (event) => {
 // them via delegation — the alternative, binding per <audio> element,
 // would need re-binding after every table re-render same as the image
 // modal above.
+//
+// Scoped to #species-table-body specifically (not just "any <audio>
+// tag") — the whole point of playingAudioElements is protecting a
+// per-row recording clip from being yanked out mid-playback by the
+// tbody's innerHTML replacement below. #live-monitor-audio (Listen
+// Live) and #recording-modal-audio (the big spectrogram modal) both
+// live outside the table and are never touched by that replacement,
+// so tracking them here just froze the whole species table for as
+// long as either was playing — confirmed live: a user reported a
+// detection ("Barred Owl") that appeared in the "Most Recent
+// Detection" card, was superseded there, but didn't show up in the
+// table below until they stopped Listen Live.
+function isRowRecordingAudio(target) {
+  return target.tagName === "AUDIO" && target.closest("#species-table-body") !== null;
+}
+
 document.body.addEventListener(
   "play",
   (event) => {
-    if (event.target.tagName === "AUDIO") playingAudioElements.add(event.target);
+    if (isRowRecordingAudio(event.target)) playingAudioElements.add(event.target);
   },
   true
 );
 document.body.addEventListener(
   "pause",
   (event) => {
-    if (event.target.tagName !== "AUDIO") return;
+    if (!isRowRecordingAudio(event.target)) return;
     playingAudioElements.delete(event.target);
     if (playingAudioElements.size === 0) renderSpeciesTable(); // catch up on whatever the last poll queued
   },
