@@ -6,8 +6,8 @@ one-shot and queue-driven BirdNET analysis, database migrate/
 integrity-check, queue status, detection/species timeline queries,
 image acquisition, the live status dashboard, `services` (install/
 uninstall/status — systemd on Linux, launchd on macOS, §29 Phase 8,
-added 2026-09-14), `doctor` (checks only — network access, frame
-configuration, and image-provider configuration aren't covered yet),
+added 2026-09-14), `doctor` (checks only; covers every §25 item as of
+2026-09-26, `--skip-network` to suppress its two outbound requests),
 `setup` (an interactive first-run wizard for location and microphone
 selection — not in the original §25 list, added 2026-09-14 once a
 public/friendlier install became a real goal; see README), and `frame
@@ -30,6 +30,7 @@ from pathlib import Path
 import click
 
 from backyard_bird.config import AppConfig, ConfigError, DashboardConfig, load_config
+from backyard_bird.layout import DataLayout
 from backyard_bird.logging_config import configure_logging
 
 DEFAULT_CONFIG_PATH = Path("config/config.yaml")
@@ -98,7 +99,7 @@ def _all_local_ipv4_addresses() -> list[str]:
 
 
 def _db_path(app_config: AppConfig) -> Path:
-    return app_config.system.data_directory / "database" / "birds.sqlite3"
+    return DataLayout.under(app_config.system.data_directory).database_path
 
 
 @click.group()
@@ -215,13 +216,14 @@ def capture_run(ctx: click.Context, max_segments: int | None) -> None:
     configure_logging(
         app_config.system.log_level,
         service_name="bird_capture",
-        log_dir=app_config.system.data_directory / "logs",
+        log_dir=DataLayout.under(app_config.system.data_directory).logs,
     )
 
-    incoming_dir = app_config.system.data_directory / "audio" / "incoming"
-    status_path = app_config.system.data_directory / "run" / "mic_status.json"
-    gain_control_path = app_config.system.data_directory / "run" / "mic_gain.json"
-    device_control_path = app_config.system.data_directory / "run" / "mic_device.json"
+    layout = DataLayout.under(app_config.system.data_directory)
+    incoming_dir = layout.incoming
+    status_path = layout.mic_status_path()
+    gain_control_path = layout.mic_gain_path()
+    device_control_path = layout.mic_device_path()
     live_monitor_port = app_config.audio.live_monitor_port if app_config.audio.enable_live_monitor else None
     service = CaptureService(
         app_config.audio,
@@ -302,7 +304,7 @@ def analyze_run(ctx: click.Context, max_files: int | None) -> None:
     configure_logging(
         app_config.system.log_level,
         service_name="bird_analyzer",
-        log_dir=app_config.system.data_directory / "logs",
+        log_dir=DataLayout.under(app_config.system.data_directory).logs,
     )
 
     conn = get_connection(_db_path(app_config))
@@ -665,20 +667,12 @@ def dashboard_generate_cert(ctx: click.Context) -> None:
 
 
 def _build_image_providers(preferred_sources: list[str]) -> list:
-    """Builds the provider list from images.preferred_sources (§18.1),
-    so config controls which sources get tried and in what order —
-    not something hardcoded here. Falls back to Wikimedia alone if the
-    config list is empty or names nothing this codebase implements.
-    """
-    from backyard_bird.images.providers.inaturalist import INaturalistProvider
-    from backyard_bird.images.providers.wikimedia import WikimediaCommonsProvider
+    """Thin wrapper over images.providers.build_providers(), which owns
+    the registry so doctor's image-provider check reads the same names
+    this does."""
+    from backyard_bird.images.providers import build_providers
 
-    registry = {
-        "wikimedia_commons": WikimediaCommonsProvider,
-        "inaturalist": INaturalistProvider,
-    }
-    providers = [registry[name]() for name in preferred_sources if name in registry]
-    return providers or [WikimediaCommonsProvider()]
+    return build_providers(preferred_sources)
 
 
 @cli.group()
@@ -708,7 +702,7 @@ def images_fetch_missing(ctx: click.Context) -> None:
         return
 
     providers = _build_image_providers(app_config.images.preferred_sources)
-    images_root = app_config.system.data_directory / "images"
+    images_root = DataLayout.under(app_config.system.data_directory).images
 
     for row in species_rows:
         click.echo(f"Searching for {row['common_name']} ({row['scientific_name']})...")
@@ -745,7 +739,7 @@ def images_refresh(ctx: click.Context, scientific_name: str) -> None:
         sys.exit(1)
 
     providers = _build_image_providers(app_config.images.preferred_sources)
-    images_root = app_config.system.data_directory / "images"
+    images_root = DataLayout.under(app_config.system.data_directory).images
     status = acquire_image_for_species(
         conn, row["id"], row["scientific_name"], row["common_name"], providers, app_config.images, images_root
     )
@@ -779,7 +773,7 @@ def images_watch(ctx: click.Context, interval_seconds: float) -> None:
     conn = get_connection(_db_path(app_config))
     apply_migrations(conn, MIGRATIONS_DIR)
     providers = _build_image_providers(app_config.images.preferred_sources)
-    images_root = app_config.system.data_directory / "images"
+    images_root = DataLayout.under(app_config.system.data_directory).images
     stop_event = threading.Event()
 
     def _handle_signal(signum: int, frame: object) -> None:
@@ -830,7 +824,7 @@ def recordings_backfill_spectrograms(ctx: click.Context) -> None:
         click.echo("No best_recordings clips found.")
         return
 
-    best_clips_root = app_config.system.data_directory / "audio" / "best_clips"
+    best_clips_root = DataLayout.under(app_config.system.data_directory).best_clips
     succeeded = 0
     for scientific_name, row in best_recordings.items():
         clip_path = Path(row["clip_path"])
@@ -892,8 +886,13 @@ SAMPLE_AUDIO_DIR = Path(__file__).resolve().parents[2] / "tests" / "sample_audio
 
 
 @cli.command("doctor")
+@click.option(
+    "--skip-network",
+    is_flag=True,
+    help="Skip the image-provider reachability check (it makes two outbound HTTPS requests).",
+)
 @click.pass_context
-def doctor_cmd(ctx: click.Context) -> None:
+def doctor_cmd(ctx: click.Context, skip_network: bool) -> None:
     """Check that the environment is ready to run the system (§25).
 
     Runs without a valid config.yaml (useful right after
@@ -921,6 +920,10 @@ def doctor_cmd(ctx: click.Context) -> None:
         data_directory=app_config.system.data_directory if app_config else None,
         configured_device_name=app_config.audio.device_name if app_config else None,
         sample_wav=sample_wav,
+        migrations_dir=MIGRATIONS_DIR,
+        preferred_image_sources=app_config.images.preferred_sources if app_config else None,
+        photo_frame_config=app_config.photo_frame if app_config else None,
+        check_network=not skip_network,
     )
 
     for result in results:

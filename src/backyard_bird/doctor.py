@@ -6,16 +6,21 @@ scripts/install.sh (CLAUDE.md rule: don't put business logic in shell
 scripts). install.sh runs `bird-display doctor` as its final
 prerequisite gate after setting up the venv.
 
-What's here covers what actually gates a fresh install: platform/
-Python/BirdNET/directories/disk/audio devices/microphone permission/
-service auto-start.
+Every §25 doctor item is now covered: platform, Python, BirdNET,
+directories, disk, audio devices, microphone permission, service
+auto-start, database access, image-provider configuration, frame
+configuration, and network access. The last four were added
+2026-09-26 — they had been deferred as "features not yet built", which
+stopped being true once images (§29 Phase 4) and the frame adapter
+package (Phase 6) landed, and database access was simply never
+written despite being on §25's list from the start.
 
-Three §25 doctor items are still missing: network access, frame
-configuration, and image-provider configuration. These were once
-deferred as "features not yet built", which is no longer the reason —
-images (§29 Phase 4) and the frame adapter package (Phase 6) both
-exist now, so these are real gaps in coverage rather than checks
-waiting on their subject to land.
+Only checks that gate *audio capture* may fail. Image, frame and
+network problems warn: capture must never depend on internet
+connectivity (CLAUDE.md rule 11) and image/frame failures must never
+stop detection (rule 12), so `doctor` exiting non-zero over an
+unreachable Wikimedia would misreport a system that is in fact
+recording birds correctly.
 """
 from __future__ import annotations
 
@@ -173,26 +178,19 @@ def check_birdnet(sample_wav: Path | None = None) -> CheckResult:
 
 
 def check_required_directories(data_directory: Path) -> CheckResult:
-    subdirs = [
-        "audio/incoming",
-        "audio/processing",
-        "audio/processed",
-        "audio/failed",
-        "audio/best_clips",  # audio/clips.py's layout — not "clips"
-        "database",
-        "images",
-        "slideshows",
-        "frame-export",
-        "logs",
-        "temp",
-    ]
+    """The list comes from layout.py, which is also what the writers
+    resolve their paths through — this check once created audio/clips
+    while every writer used audio/best_clips, and nothing noticed
+    because mkdir(exist_ok=True) can't fail on a name nobody reads."""
+    from backyard_bird.layout import DataLayout
+
+    required = DataLayout.under(data_directory).required_directories()
     failed = []
-    for sub in subdirs:
-        path = data_directory / sub
+    for path in required:
         try:
             path.mkdir(parents=True, exist_ok=True)
         except OSError:
-            failed.append(sub)
+            failed.append(str(path.relative_to(data_directory)))
 
     if failed:
         return CheckResult(
@@ -201,7 +199,7 @@ def check_required_directories(data_directory: Path) -> CheckResult:
             f"Could not create: {', '.join(failed)} under {data_directory}",
         )
     return CheckResult(
-        "required_directories", "pass", f"All {len(subdirs)} data subdirectories exist under {data_directory}"
+        "required_directories", "pass", f"All {len(required)} data subdirectories exist under {data_directory}"
     )
 
 
@@ -398,16 +396,198 @@ def check_service_autostart() -> CheckResult:
     )
 
 
+def check_database_access(data_directory: Path, migrations_dir: Path | None = None) -> CheckResult:
+    """§25 "database access". Beyond opening the file, this reports
+    *pending migrations*, which is the failure mode that actually bit
+    this project: `dashboard run` never applies migrations, so a
+    schema-only change that ships without a manual `bird-display
+    database migrate` does nothing until the first route needing the
+    new table 500s (found live, 2026-09-21, migration 005).
+    """
+    from backyard_bird.layout import DataLayout
+
+    db_path = DataLayout.under(data_directory).database_path
+    if not db_path.exists():
+        return CheckResult(
+            "database_access",
+            "warn",
+            f"No database at {db_path} yet — it's created on first use. "
+            "Run `bird-display database migrate` to create it now.",
+        )
+
+    from backyard_bird.database.connection import get_connection
+
+    try:
+        conn = get_connection(db_path)
+    except Exception as exc:
+        return CheckResult("database_access", "fail", f"Could not open {db_path}: {exc}")
+
+    try:
+        try:
+            integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+        except Exception as exc:
+            return CheckResult("database_access", "fail", f"Could not read {db_path}: {exc}")
+
+        if integrity != "ok":
+            return CheckResult(
+                "database_access",
+                "fail",
+                f"PRAGMA integrity_check on {db_path} returned {integrity!r}. "
+                "Restore from a backup — see `bird-display database integrity-check`.",
+            )
+
+        if migrations_dir is None or not migrations_dir.is_dir():
+            return CheckResult(
+                "database_access", "pass", f"{db_path} opens and passes integrity_check."
+            )
+
+        from backyard_bird.database.migrations import pending_migrations
+
+        pending = pending_migrations(conn, migrations_dir)
+    finally:
+        conn.close()
+
+    if pending:
+        versions = ", ".join(str(version) for version, _, _ in pending)
+        return CheckResult(
+            "database_access",
+            "warn",
+            f"{len(pending)} migration(s) not applied ({versions}). Features needing the "
+            "new schema will fail at runtime until you run `bird-display database migrate`.",
+        )
+    return CheckResult(
+        "database_access", "pass", f"{db_path} opens, passes integrity_check, schema up to date."
+    )
+
+
+def check_image_providers(preferred_sources: list[str] | None) -> CheckResult:
+    """§25 "image-provider configuration". Neither provider needs an
+    API key (§15.3 picked them partly for that), so there is no
+    credential to verify — what can actually be wrong is a name in
+    images.preferred_sources that this codebase doesn't implement,
+    which build_providers() silently drops on its way to the Wikimedia
+    fallback. Warns rather than fails: rule 12.
+    """
+    from backyard_bird.images.providers import DEFAULT_PROVIDER, KNOWN_PROVIDERS
+
+    if preferred_sources is None:
+        return CheckResult("image_providers", "warn", "Skipped: no config loaded.")
+
+    unknown = [name for name in preferred_sources if name not in KNOWN_PROVIDERS]
+    known = [name for name in preferred_sources if name in KNOWN_PROVIDERS]
+
+    if unknown and not known:
+        return CheckResult(
+            "image_providers",
+            "warn",
+            f"images.preferred_sources names only unimplemented provider(s): {', '.join(unknown)}. "
+            f"Falling back to {DEFAULT_PROVIDER}. Known providers: {', '.join(KNOWN_PROVIDERS)}.",
+        )
+    if unknown:
+        return CheckResult(
+            "image_providers",
+            "warn",
+            f"Ignoring unimplemented provider(s) in images.preferred_sources: {', '.join(unknown)}. "
+            f"Active: {', '.join(known)}. Known providers: {', '.join(KNOWN_PROVIDERS)}.",
+        )
+    if not known:
+        return CheckResult(
+            "image_providers",
+            "warn",
+            f"images.preferred_sources is empty — falling back to {DEFAULT_PROVIDER}.",
+        )
+    return CheckResult("image_providers", "pass", f"{len(known)} provider(s) configured: {', '.join(known)}")
+
+
+def check_frame_configuration(photo_frame_config: object | None = None) -> CheckResult:
+    """§25 "frame configuration". Builds the configured adapter and
+    asks it to test its own connection (§17.4) — for local_export that
+    is "is the export directory writable", which is exactly what would
+    otherwise fail silently at delivery time. Warns rather than fails:
+    rule 12, and `unconfigured` is a legitimate deliberate state.
+    """
+    if photo_frame_config is None:
+        return CheckResult("frame_configuration", "warn", "Skipped: no config loaded.")
+
+    from backyard_bird.frame.service import build_frame_adapter
+
+    try:
+        adapter = build_frame_adapter(photo_frame_config)  # type: ignore[arg-type]
+        result = adapter.test_connection()
+    except Exception as exc:
+        return CheckResult("frame_configuration", "warn", f"Frame adapter could not be checked: {exc}")
+
+    name = getattr(photo_frame_config, "adapter", "?")
+    if not result.ok:
+        return CheckResult("frame_configuration", "warn", f"Adapter {name!r}: {result.message}")
+    return CheckResult("frame_configuration", "pass", f"Adapter {name!r}: {result.message}")
+
+
+def check_network_access(timeout_seconds: float = 4.0) -> CheckResult:
+    """§25 "network access", scoped to what this project actually needs
+    the internet for: reaching the image providers. Capture and BirdNET
+    are fully offline (rule 11), so this can only ever warn — a Pi with
+    no uplink is still a working bird detector, just one that can't
+    fetch new photos.
+    """
+    import socket
+    import urllib.error
+    import urllib.request
+
+    endpoints = [
+        ("wikimedia_commons", "https://commons.wikimedia.org/robots.txt"),
+        ("inaturalist", "https://api.inaturalist.org/v1/ping"),
+    ]
+    reachable, unreachable = [], []
+    for name, url in endpoints:
+        try:
+            request = urllib.request.Request(url, headers={"User-Agent": "backyard-bird-display/doctor"})
+            with urllib.request.urlopen(request, timeout=timeout_seconds):
+                reachable.append(name)
+        except (urllib.error.URLError, socket.timeout, OSError):
+            unreachable.append(name)
+
+    if not reachable:
+        return CheckResult(
+            "network_access",
+            "warn",
+            "No image provider reachable. Audio capture and BirdNET are unaffected "
+            "(they never need the network) — only new species photos will be missing "
+            "until connectivity returns.",
+        )
+    if unreachable:
+        return CheckResult(
+            "network_access",
+            "warn",
+            f"Reachable: {', '.join(reachable)}. Not reachable: {', '.join(unreachable)}.",
+        )
+    return CheckResult("network_access", "pass", f"Image providers reachable: {', '.join(reachable)}")
+
+
 def run_all_checks(
     data_directory: Path | None = None,
     configured_device_name: str | None = None,
     sample_wav: Path | None = None,
+    migrations_dir: Path | None = None,
+    preferred_image_sources: list[str] | None = None,
+    photo_frame_config: object | None = None,
+    check_network: bool = True,
 ) -> list[CheckResult]:
+    """The config-derived arguments are all optional because `doctor`
+    is meant to run before config.yaml exists (right after
+    scripts/install.sh) — anything that needs config reports "skipped"
+    rather than failing the run.
+    """
     results = [check_platform(), check_python_version(), check_birdnet(sample_wav)]
     if data_directory is not None:
         results.append(check_required_directories(data_directory))
         results.append(check_disk_space(data_directory))
+        results.append(check_database_access(data_directory, migrations_dir))
     results.append(check_audio_devices(configured_device_name))
     results.append(check_microphone_permission(configured_device_name))
+    results.append(check_image_providers(preferred_image_sources))
+    results.append(check_frame_configuration(photo_frame_config))
+    if check_network:
+        results.append(check_network_access())
     results.append(check_service_autostart())
     return results

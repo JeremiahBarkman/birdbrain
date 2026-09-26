@@ -127,9 +127,14 @@ cp config/config.example.yaml config/config.yaml   # done automatically by insta
 
 Re-run `bird-display doctor` any time to re-check the environment:
 platform, Python version, BirdNET, required directories, disk space,
-audio-device availability, and — separately, since listing devices
-needs no permission but recording does — whether this process can
-actually open the microphone.
+database access (including migrations applied but never run), audio-device
+availability, and — separately, since listing devices needs no permission
+but recording does — whether this process can actually open the
+microphone. It also checks image-provider configuration, frame
+configuration, and whether the image providers are reachable; those
+three only ever warn, since neither capture nor detection depends on
+them. `--skip-network` suppresses the two outbound requests the
+reachability check makes.
 
 ### First-run gotchas not fully automatable
 

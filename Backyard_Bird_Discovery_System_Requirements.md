@@ -2027,7 +2027,8 @@ Deliverables:
 - `launchd` definitions (macOS) / `systemd` unit definitions (Linux) — **done, 2026-09-14** (`bird-display services install`/`uninstall`/`status`; see `src/backyard_bird/service_install.py` and README's dated implementation note)
 - Installation script
 - Heartbeats
-- `doctor` command
+- `doctor` command — **done, 2026-09-26**: every item §25 lists is now
+  checked. See the dated implementation note below.
 - Database backup
 - Optional dashboard
 - Recovery testing
@@ -2050,6 +2051,33 @@ attached GUI session; a LaunchDaemon would hit that wall permanently.
 fails — the manual `scripts/start_all.sh`/`stop_all.sh` launcher
 remains a fully supported alternative, so auto-start is a convenience,
 not a hard requirement).
+
+**Implementation note (2026-09-26):** the four §25 `doctor` items that
+had never been written — database access, image-provider
+configuration, frame configuration, network access — were added, so
+the command now covers §25's list in full. Only checks that gate audio
+capture can fail; image, frame and network checks warn, because
+capture must never depend on connectivity (§30 rule 11) and image or
+frame failures must never stop detection (rule 12) — a `doctor` that
+exited non-zero over an unreachable Wikimedia would misreport a
+system that is in fact recording birds correctly.
+
+The database check reports *pending migrations*, not just that the
+file opens: that is the failure this project actually hit (2026-09-21,
+migration 005) — `dashboard run` never applies migrations, so a
+schema-only change silently does nothing until the first route needing
+the new table fails at runtime.
+
+Found while writing these: `doctor` had been creating
+`data/audio/clips` while every writer used `data/audio/best_clips`,
+so it verified a directory nobody read and never checked the real one.
+`mkdir(parents=True, exist_ok=True)` cannot fail on a name nobody
+reads, which is why nothing caught it. The durable fix is
+`src/backyard_bird/layout.py`: one `DataLayout` that both `doctor` and
+every writer resolve paths through, so the two cannot drift again.
+The same reasoning put the image-provider registry in
+`images/providers/__init__.py`, where the check and the builder read
+the same names.
 
 ---
 

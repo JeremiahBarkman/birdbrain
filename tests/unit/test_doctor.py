@@ -16,8 +16,12 @@ from backyard_bird.audio.devices import AudioDevice
 from backyard_bird.doctor import (
     check_audio_devices,
     check_birdnet,
+    check_database_access,
     check_disk_space,
+    check_frame_configuration,
+    check_image_providers,
     check_microphone_permission,
+    check_network_access,
     check_platform,
     check_python_version,
     check_required_directories,
@@ -251,10 +255,13 @@ def test_run_all_checks_skips_directory_and_disk_checks_without_data_directory()
     with patch("birdnetlib.analyzer.Analyzer") as mock_analyzer, \
          patch("backyard_bird.audio.devices.list_input_devices", return_value=[]):
         mock_analyzer.return_value = object()
-        results = run_all_checks(data_directory=None)
+        # check_network=False: run_all_checks would otherwise make two
+        # real outbound HTTPS requests from a unit test.
+        results = run_all_checks(data_directory=None, check_network=False)
     names = {r.name for r in results}
     assert "required_directories" not in names
     assert "disk_space" not in names
+    assert "database_access" not in names
     assert "python_version" in names
     assert "birdnet" in names
     assert "audio_devices" in names
@@ -316,3 +323,199 @@ def test_service_autostart_unsupported_os_warns() -> None:
     with patch("platform.system", return_value="Windows"):
         result = check_service_autostart()
     assert result.status == "warn"
+
+
+# -- database access (§25) ----------------------------------------------------
+
+
+def test_database_access_warns_when_no_database_exists_yet(tmp_path: Path) -> None:
+    result = check_database_access(tmp_path)
+    assert result.status == "warn"
+    assert "database migrate" in result.message
+
+
+def test_database_access_passes_on_a_fully_migrated_database(tmp_path: Path) -> None:
+    from backyard_bird.database.connection import get_connection
+    from backyard_bird.database.migrations import apply_migrations
+    from backyard_bird.layout import DataLayout
+
+    migrations_dir = Path(__file__).resolve().parents[2] / "migrations"
+    db_path = DataLayout.under(tmp_path).database_path
+    db_path.parent.mkdir(parents=True)
+    conn = get_connection(db_path)
+    apply_migrations(conn, migrations_dir)
+    conn.close()
+
+    result = check_database_access(tmp_path, migrations_dir)
+    assert result.status == "pass"
+    assert "up to date" in result.message
+
+
+def test_database_access_warns_about_pending_migrations(tmp_path: Path) -> None:
+    """The real failure this check exists for: a database that opens
+    fine but is missing a migration, so features 500 at runtime
+    (migration 005, found live 2026-09-21)."""
+    from backyard_bird.database.connection import get_connection
+    from backyard_bird.database.migrations import apply_migrations
+    from backyard_bird.layout import DataLayout
+
+    real_migrations = Path(__file__).resolve().parents[2] / "migrations"
+    partial_dir = tmp_path / "partial_migrations"
+    partial_dir.mkdir()
+    everything = sorted(real_migrations.glob("*.sql"))
+    for path in everything[:-1]:
+        (partial_dir / path.name).write_text(path.read_text())
+
+    db_path = DataLayout.under(tmp_path).database_path
+    db_path.parent.mkdir(parents=True)
+    conn = get_connection(db_path)
+    apply_migrations(conn, partial_dir)
+    conn.close()
+
+    result = check_database_access(tmp_path, real_migrations)
+    assert result.status == "warn"
+    assert "1 migration(s) not applied" in result.message
+
+
+def test_database_access_fails_on_a_corrupt_database(tmp_path: Path) -> None:
+    from backyard_bird.layout import DataLayout
+
+    db_path = DataLayout.under(tmp_path).database_path
+    db_path.parent.mkdir(parents=True)
+    db_path.write_bytes(b"this is definitely not a SQLite file")
+
+    result = check_database_access(tmp_path)
+    assert result.status == "fail"
+
+
+# -- image providers (§25) ----------------------------------------------------
+
+
+def test_image_providers_passes_on_the_default_configuration() -> None:
+    result = check_image_providers(["wikimedia_commons", "inaturalist"])
+    assert result.status == "pass"
+
+
+def test_image_providers_warns_about_an_unimplemented_source() -> None:
+    """build_providers() drops unknown names silently on its way to the
+    Wikimedia fallback — this check is the only thing that says so."""
+    result = check_image_providers(["wikimedia_commons", "flickr"])
+    assert result.status == "warn"
+    assert "flickr" in result.message
+
+
+def test_image_providers_warns_when_every_source_is_unimplemented() -> None:
+    result = check_image_providers(["flickr"])
+    assert result.status == "warn"
+    assert "wikimedia_commons" in result.message
+
+
+def test_image_providers_warns_on_an_empty_source_list() -> None:
+    result = check_image_providers([])
+    assert result.status == "warn"
+
+
+def test_image_providers_skipped_without_config() -> None:
+    result = check_image_providers(None)
+    assert result.status == "warn"
+    assert "Skipped" in result.message
+
+
+# -- frame configuration (§25) ------------------------------------------------
+
+
+def test_frame_configuration_passes_when_the_export_directory_is_writable(tmp_path: Path) -> None:
+    from backyard_bird.config import PhotoFrameConfig
+
+    config = PhotoFrameConfig(export_directory=tmp_path / "frame-export" / "current")
+    result = check_frame_configuration(config)
+    assert result.status == "pass"
+    assert "local_export" in result.message
+
+
+def test_frame_configuration_warns_on_an_unimplemented_adapter(tmp_path: Path) -> None:
+    """`unconfigured` is a legitimate state (no Uhale API exists, §30
+    rule 24) — warn, never fail (rule 12)."""
+    from backyard_bird.config import PhotoFrameConfig
+
+    config = PhotoFrameConfig(adapter="uhale_web", export_directory=tmp_path / "current")
+    result = check_frame_configuration(config)
+    assert result.status == "warn"
+
+
+def test_frame_configuration_skipped_without_config() -> None:
+    result = check_frame_configuration(None)
+    assert result.status == "warn"
+    assert "Skipped" in result.message
+
+
+# -- network access (§25) -----------------------------------------------------
+
+
+def test_network_access_warns_rather_than_fails_when_offline() -> None:
+    """Rule 11: capture never needs the internet, so an offline Pi is a
+    working bird detector and doctor must not exit non-zero over it."""
+    with patch("urllib.request.urlopen", side_effect=OSError("no route to host")):
+        result = check_network_access()
+    assert result.status == "warn"
+    assert "Audio capture and BirdNET are unaffected" in result.message
+
+
+def test_network_access_passes_when_providers_are_reachable() -> None:
+    from contextlib import contextmanager
+
+    @contextmanager
+    def fake_urlopen(*args, **kwargs):
+        yield object()
+
+    with patch("urllib.request.urlopen", fake_urlopen):
+        result = check_network_access()
+    assert result.status == "pass"
+
+
+def test_network_access_warns_when_only_one_provider_is_reachable() -> None:
+    from contextlib import contextmanager
+
+    calls = []
+
+    @contextmanager
+    def flaky_urlopen(request, *args, **kwargs):
+        calls.append(request)
+        if len(calls) > 1:
+            raise OSError("timed out")
+        yield object()
+
+    with patch("urllib.request.urlopen", flaky_urlopen):
+        result = check_network_access()
+    assert result.status == "warn"
+    assert "Not reachable" in result.message
+
+
+def test_run_all_checks_includes_every_section_25_item(tmp_path: Path) -> None:
+    """§25's list, as one assertion — so an item can't quietly go
+    missing again the way database access did."""
+    from backyard_bird.config import PhotoFrameConfig
+
+    with patch("birdnetlib.analyzer.Analyzer") as mock_analyzer, \
+         patch("backyard_bird.audio.devices.list_input_devices", return_value=[]), \
+         patch("urllib.request.urlopen", side_effect=OSError("offline")):
+        mock_analyzer.return_value = object()
+        results = run_all_checks(
+            data_directory=tmp_path,
+            preferred_image_sources=["wikimedia_commons"],
+            photo_frame_config=PhotoFrameConfig(export_directory=tmp_path / "current"),
+        )
+    names = {r.name for r in results}
+    assert {
+        "python_version",
+        "birdnet",
+        "audio_devices",
+        "microphone_permission",
+        "database_access",
+        "required_directories",
+        "disk_space",
+        "image_providers",
+        "frame_configuration",
+        "network_access",
+        "service_autostart",
+    } <= names

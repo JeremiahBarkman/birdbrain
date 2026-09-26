@@ -6,6 +6,7 @@ from pathlib import Path
 from flask import Flask
 
 from backyard_bird.config import AppConfig
+from backyard_bird.layout import DataLayout
 
 
 def create_app(app_config: AppConfig, config_path: Path | None = None) -> Flask:
@@ -23,18 +24,19 @@ def create_app(app_config: AppConfig, config_path: Path | None = None) -> Flask:
     # the process's working directory — a relative data_directory silently
     # 404'd every image until this was made absolute (confirmed live).
     data_directory = app_config.system.data_directory.resolve()
-    app.config["DB_PATH"] = data_directory / "database" / "birds.sqlite3"
+    layout = DataLayout.under(data_directory)
+    app.config["DB_PATH"] = layout.database_path
     app.config["TIMEZONE"] = app_config.system.timezone
-    app.config["IMAGES_ROOT"] = data_directory / "images"
-    app.config["AUDIO_CLIPS_ROOT"] = data_directory / "audio" / "best_clips"
-    app.config["MIC_STATUS_PATH"] = data_directory / "run" / "mic_status.json"
+    app.config["IMAGES_ROOT"] = layout.images
+    app.config["AUDIO_CLIPS_ROOT"] = layout.best_clips
+    app.config["MIC_STATUS_PATH"] = layout.mic_status_path()
     app.config["LIVE_MONITOR_ENABLED"] = app_config.audio.enable_live_monitor
     app.config["LIVE_MONITOR_PORT"] = app_config.audio.live_monitor_port
     app.config["AUDIO_SAMPLE_RATE"] = app_config.audio.sample_rate
     app.config["AUDIO_CHANNELS"] = app_config.audio.channels
-    app.config["GAIN_CONTROL_PATH"] = data_directory / "run" / "mic_gain.json"
+    app.config["GAIN_CONTROL_PATH"] = layout.mic_gain_path()
     app.config["GAIN_DEFAULT"] = app_config.audio.gain
-    app.config["DEVICE_CONTROL_PATH"] = data_directory / "run" / "mic_device.json"
+    app.config["DEVICE_CONTROL_PATH"] = layout.mic_device_path()
     app.config["DEVICE_DEFAULT"] = app_config.audio.device_name
     # Fullscreen slideshow preview (§16, user request): the same
     # qualification/ordering/presentation config the frame delivery
@@ -51,7 +53,7 @@ def create_app(app_config: AppConfig, config_path: Path | None = None) -> Flask:
     # from too — and /api/slideshow/export (routes.py) serves those
     # files individually for the browser to download into the
     # viewer's own Downloads folder.
-    app.config["SLIDESHOW_OUTPUT_ROOT"] = data_directory / "slideshows"
+    app.config["SLIDESHOW_OUTPUT_ROOT"] = layout.slideshows
     # Optional: without it (e.g. most existing tests), a device switch
     # still takes effect live via DEVICE_CONTROL_PATH above, it just
     # isn't persisted back into config.yaml for the next full restart.

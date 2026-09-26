@@ -22,6 +22,7 @@ from backyard_bird.analysis.birdnet_adapter import analyze_file
 from backyard_bird.analysis.deduplicator import find_duplicate
 from backyard_bird.analysis.result_parser import ParsedDetection, parse_detection
 from backyard_bird.audio.clips import extract_clip, species_clip_path, species_spectrogram_path
+from backyard_bird.layout import DataLayout
 from backyard_bird.audio.retention import enforce_disk_space_floor, sweep_failed, sweep_processed
 from backyard_bird.audio.segmenter import parse_segment_filename
 from backyard_bird.audio.spectrogram import generate_spectrogram
@@ -55,13 +56,13 @@ class QueueDirs:
 
     @classmethod
     def under(cls, data_directory: Path) -> "QueueDirs":
-        base = data_directory / "audio"
+        layout = DataLayout.under(data_directory)
         return cls(
-            incoming=base / "incoming",
-            processing=base / "processing",
-            processed=base / "processed",
-            failed=base / "failed",
-            best_clips=base / "best_clips",
+            incoming=layout.incoming,
+            processing=layout.processing,
+            processed=layout.processed,
+            failed=layout.failed,
+            best_clips=layout.best_clips,
         )
 
     def ensure(self) -> None:

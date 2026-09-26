@@ -1664,3 +1664,98 @@ out-of-range stored value falling back to default, and "Clear filters"
 resetting the stored value too. Full Python suite (385 tests, none of
 which touch this) still passes.
 
+
+### Stale docs corrected, and the `doctor` gaps they exposed (2026-09-26)
+
+Started from a user observation about README's Status section, which
+still read "Not yet built: daily species aggregation, the daily
+slideshow builder, and delivering that slideshow to the Euphro WF1561
+automatically." The first two had shipped on 2026-09-20/21. Eight
+other places carried the same dead claim: `cli.py`'s module docstring,
+`frame/__init__.py`, `frame/manifest.py`, `aggregation/__init__.py`,
+`web/app.py`, `web/routes.py`, and two spots in the requirements doc
+(§22.1's preview note and Phase 6's exit condition).
+
+Two of those needed their *reasoning* rewritten rather than their
+conclusion. `/api/slideshow` and `web/app.py` both justified querying
+`detections` live "because `daily_species_summary` isn't scheduled
+yet." That reason is dead, but the choice is still correct for a
+reason worth writing down: the preview has to stay current as
+detections arrive through the day, and routing it through
+`build_daily_slideshow()` would re-render every slide just to draw a
+browser preview. Phase 6's exit condition moved from "not met" to
+"substantially met", naming the two real gaps — `publish_slideshow()`
+has still only ever seen synthetic fixtures, since the ZIP route
+packages the builder's output without going through the adapter, and
+no single build → copy → confirmed-display run on the physical frame
+is recorded anywhere.
+
+§24's suggested project structure got a divergence list rather than a
+rewrite: it is explicitly the pre-implementation proposal, so the
+honest fix is to say where the built tree differs (twelve places —
+`analysis/clip_extractor.py` never happened, `slideshow/manifest.py`
+landed in `frame/`, `aggregation/` was split out during Phase 5,
+`scheduler/` still doesn't exist, and so on) and point at
+`src/backyard_bird/` as authoritative.
+
+**The real bug this turned up**: `doctor.check_required_directories`
+created `data/audio/clips`, while every writer — `worker.py`,
+`web/app.py`, `cli.py`, `audio/clips.py` — used
+`data/audio/best_clips`. So `doctor` had been creating an empty stray
+directory and never verifying the one holding 136 species' clips.
+Nothing caught it because `mkdir(parents=True, exist_ok=True)` cannot
+fail on a name nobody reads: the check passed, loudly, while checking
+the wrong thing.
+
+Fixed the name, then fixed the class of bug: `src/backyard_bird/
+layout.py` is now the single definition of what lives where under
+`data/`, and `doctor` plus every writer resolve their paths through
+it. `run/` is deliberately excluded from `required_directories()` —
+it holds transient inter-process state whose own writers create it on
+demand, so a fresh install has no reason to pre-create it, and that
+distinction is now written down rather than implied. The same
+reasoning moved the image-provider registry out of `cli.py`'s private
+`_build_image_providers()` into `images/providers/__init__.py`, so
+doctor's provider check and the builder read one list of names.
+
+**The four missing `doctor` checks.** The docstring claimed three §25
+items were unimplemented (network access, frame configuration,
+image-provider configuration), deferred as "features not yet built" —
+no longer true once Phase 4 and Phase 6 landed. Re-reading §25 against
+`run_all_checks()` turned up a fourth nobody had noticed: **database
+access**, on the requirement list from the start and simply never
+written. All four are now implemented:
+
+- `check_database_access` opens the DB, runs `PRAGMA integrity_check`,
+  and reports **pending migrations** — the failure that actually bit
+  this project on 2026-09-21, where `dashboard run` never applies
+  migrations, so a schema-only change does nothing until the first
+  route needing the new table 500s. Needed a public read-only
+  `pending_migrations()` alongside `apply_migrations()`.
+- `check_image_providers` warns about names in
+  `images.preferred_sources` that `build_providers()` silently drops
+  on its way to the Wikimedia fallback.
+- `check_frame_configuration` builds the configured adapter and calls
+  its own `test_connection()` (§17.4) — for `local_export`, "is the
+  export directory writable", exactly what would otherwise surface
+  only at delivery time.
+- `check_network_access` probes the two image providers.
+
+Status discipline matters here: only checks gating *audio capture* may
+fail. Image, frame and network checks warn, because capture must never
+depend on connectivity (rule 11) and image/frame failures must never
+stop detection (rule 12) — a `doctor` exiting non-zero over an
+unreachable Wikimedia would misreport a system that is recording birds
+correctly. `--skip-network` suppresses the two outbound requests.
+
+One existing test (`test_run_all_checks_skips_directory_and_disk_
+checks_without_data_directory`) would have started making real network
+calls once `check_network_access` joined `run_all_checks`; it now
+passes `check_network=False`. Added `test_run_all_checks_includes_
+every_section_25_item`, which asserts §25's list as a single set — so
+an item can't quietly go missing again the way database access did for
+the life of the project. 409 tests pass (was 393). Verified live on
+the Pi: all four new checks run green against the real install, with
+`database_access` confirming the schema is up to date and
+`frame_configuration` confirming `data/frame-export/current` is
+writable.

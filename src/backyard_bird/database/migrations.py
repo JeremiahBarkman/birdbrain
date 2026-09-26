@@ -51,6 +51,22 @@ def discover_migrations(migrations_dir: Path) -> list[tuple[int, str, Path]]:
     return sorted(found, key=lambda item: item[0])
 
 
+def pending_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> list[tuple[int, str, Path]]:
+    """Migrations on disk that this database hasn't applied — the
+    read-only half of apply_migrations(), for callers that need to
+    report on the gap rather than close it (doctor.py).
+
+    A database with no schema_migrations table at all has applied
+    nothing, so everything is pending; that is read as a missing table
+    rather than created, keeping this side-effect free.
+    """
+    try:
+        already_applied = _applied_versions(conn)
+    except sqlite3.OperationalError:
+        already_applied = set()
+    return [m for m in discover_migrations(migrations_dir) if m[0] not in already_applied]
+
+
 def apply_migrations(conn: sqlite3.Connection, migrations_dir: Path) -> list[int]:
     """Apply any not-yet-applied migrations, in order. Returns versions applied.
 
