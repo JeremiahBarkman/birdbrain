@@ -37,10 +37,10 @@ def create_app(app_config: AppConfig, config_path: Path | None = None) -> Flask:
     app.config["DEVICE_CONTROL_PATH"] = data_directory / "run" / "mic_device.json"
     app.config["DEVICE_DEFAULT"] = app_config.audio.device_name
     # Fullscreen slideshow preview (§16, user request): the same
-    # qualification/ordering/presentation config the eventual frame
-    # delivery pipeline (§29 Phase 5) will use, applied here to a live
-    # query instead of the not-yet-scheduled daily_species_summary
-    # table — see /api/slideshow in routes.py.
+    # qualification/ordering/presentation config the frame delivery
+    # pipeline (§29 Phase 5) uses, applied here to a live query
+    # instead of the daily_species_summary table, so the preview stays
+    # current between builds — see /api/slideshow in routes.py.
     app.config["SLIDESHOW_MIN_CONFIDENCE"] = app_config.birdnet.slideshow_minimum_confidence
     app.config["SLIDESHOW_ORDER"] = app_config.slideshow.order
     app.config["SLIDESHOW_DISPLAY_MODE"] = app_config.slideshow.display_mode

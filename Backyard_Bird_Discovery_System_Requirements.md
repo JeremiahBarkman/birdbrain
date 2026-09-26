@@ -1358,15 +1358,17 @@ The dashboard should display:
   fullscreen slideshow preview. A "▶ Slideshow" button in the header
   fetches `GET /api/slideshow` (today's qualifying species — same
   confidence-threshold + approved-image rule §16.2 describes, applied
-  live against `detections` rather than the not-yet-scheduled
-  `daily_species_summary` table, same as `/api/stats`) and cycles
+  live against `detections` rather than the `daily_species_summary`
+  table, same as `/api/stats`, so the preview stays current between
+  builds) and cycles
   fullscreen through them with a text overlay in the browser (Clean or
   Informational per `slideshow.display_mode`, §16.3), until any key
   press or mouse action ends it. This previews what the frame delivery
-  pipeline (§29 Phase 5/6/7) will eventually show physically — it does
-  not read from or write to `slideshows`/`slideshow_items`, since no
-  builder populates those yet. See DEVELOPMENT.md's dated
-  implementation note.
+  pipeline (§29 Phase 5/6/7) shows physically — it deliberately does
+  not read from or write to `slideshows`/`slideshow_items`, since
+  previewing in a browser shouldn't re-render a day's slides; the
+  "Save Slides" button below calls the real builder instead. See
+  DEVELOPMENT.md's dated implementation note.
 - **Added, 2026-09-21** (user-requested): a "💾 Save Slides" button
   (originally labeled "Save to SD", renamed same day) next to
   Slideshow. Unlike the preview above, this calls the real
@@ -1475,6 +1477,47 @@ The frame serial number, MAC address, local IP address, pairing codes, and accou
 ---
 
 ## 24. Suggested Project Structure
+
+This is the layout proposed before implementation, kept as written.
+The built tree follows it closely but diverges in several places that
+are deliberate, not drift — read `src/backyard_bird/` as authoritative
+where the two disagree:
+
+- `analysis/clip_extractor.py` was never created. Clip extraction
+  lives in `audio/clips.py` (`extract_clip()`, called by
+  `analysis/worker.py`), with the rest of the WAV handling.
+- `slideshow/manifest.py` is `frame/manifest.py` instead: the manifest
+  is the shape the adapter interface commits to (§17.4), so it belongs
+  with the adapters that consume it and could be built before the
+  builder existed. `slideshow/templates.py` was never needed —
+  `renderer.py` composites slides directly.
+- `aggregation/` (§14's daily summary job) is not in this tree at all;
+  it was split out of the slideshow package during Phase 5.
+- `scheduler/` does not exist yet — nothing runs aggregation, the
+  slideshow build, or frame delivery unattended (§29 Phase 7).
+- `frame/adapters/removable_media.py` and `uhale_web.py` are not
+  implemented; `local_export.py` and `unconfigured.py` are (§29 Phase
+  6, and §30 rule 24 on not reverse-engineering Uhale).
+- `database/models.py` was not needed — `repositories.py` returns
+  `sqlite3.Row` directly.
+- Migrations are named for what they add, and there are now five, not
+  the two shown here; `002_add_frame_delivery.sql` does not exist.
+- `doctor.py`, `setup_wizard.py`, `service_install.py` and
+  `logging_config.py` sit at the package root, and `audio/` holds
+  considerably more than the four modules listed (gain, levels,
+  live monitoring, spectrograms, device control, WAV streaming).
+- `data/audio/clips/` is `data/audio/best_clips/` in practice — one
+  clip per species, not one per detection (migration 003).
+- `config/launchd/` holds no checked-in plists. `service_install.py`
+  generates units at install time instead (systemd
+  `birdbrain-<name>.service`, launchd `com.backyardbird.<name>.plist`),
+  for capture, analyzer, images-watch and dashboard — no scheduler
+  unit, and two the tree doesn't list.
+- `scripts/` has `install.sh`, `uninstall.sh`, `start_all.sh` and
+  `stop_all.sh`; `start-dev.sh`, `check-audio-device.sh` and
+  `backup-database.sh` were never written.
+- `tests/fixtures/` does not exist; fixtures live beside the tests
+  that use them, with `tests/sample_audio/` for real WAV input.
 
 ```text
 backyard-bird-display/
@@ -1926,10 +1969,15 @@ Deliverables:
   (including a future `uhale_web`, not yet implemented — the project
   still has no confirmed public/documented Uhale API, per §30 rule 24).
 - Initial delivery adapter — **done, 2026-09-20**: `LocalExportAdapter`
-  (§17.5), independent of the not-yet-built slideshow generator
-  (§29 Phase 5) — it takes a rendered slide directory + manifest and
-  packages them, so it's already testable and already the guaranteed
-  fallback rule 29 requires.
+  (§17.5), deliberately independent of the slideshow generator
+  (§29 Phase 5, built 2026-09-21) — it takes a rendered slide
+  directory + manifest and packages them, which is what let it be
+  built and tested before Phase 5 landed and makes it the guaranteed
+  fallback rule 29 requires. Note that nothing calls
+  `publish_slideshow()` outside `frame test`: the transfer path in
+  actual use is the dashboard's ZIP download (§22.1), which packages
+  the builder's output directly rather than going through an
+  adapter.
 - Manual fallback export — **done, 2026-09-20**: this *is* the manual
   fallback export (`local_export` writes `data/frame-export/current/`
   with the slides, `manifest.json`, and `README.txt` per §17.5).
@@ -1943,10 +1991,19 @@ Exit condition:
 
 > A generated slideshow can be transferred reproducibly to the WF1561.
 
-Not yet met — the slideshow builder (§29 Phase 5) that would produce a
-real `SlideshowManifest` for `LocalExportAdapter.publish_slideshow()`
-to act on doesn't exist yet, so this has only been exercised against
-synthetic test fixtures, not a real daily slideshow.
+Substantially met, 2026-09-21 — the slideshow builder (§29 Phase 5)
+now produces a real `SlideshowManifest` from real detections, and the
+dashboard's "Save Slides" button turns one day's build into a single
+dated ZIP (verified live against the real database: an 18-slide
+archive). Combined with the USB/SD import verified on the unit above,
+that is a reproducible transfer path a person can repeat.
+
+Two gaps remain. `LocalExportAdapter.publish_slideshow()` itself has
+still only been exercised against synthetic test fixtures, since the
+ZIP route packages the builder's output without going through the
+adapter. And no single run of build → copy → confirmed display on the
+physical WF1561 has been recorded end to end; the two halves have each
+been verified separately.
 
 ### Phase 7: Unattended Delivery
 

@@ -11,13 +11,15 @@ configuration, and image-provider configuration aren't covered yet),
 `setup` (an interactive first-run wizard for location and microphone
 selection — not in the original §25 list, added 2026-09-14 once a
 public/friendlier install became a real goal; see README), and `frame
-inspect`/`frame test` (§29 Phase 6, added 2026-09-20 — the adapter
-package exists and local_export works standalone; the slideshow
-builder that produces a real SlideshowManifest for it is still Phase
-5, not built).
-Not yet built: the slideshow builder (Phase 5) and a scheduled
-frame-delivery job that calls publish_slideshow() automatically
-(Phase 7).
+inspect`/`frame test` (§29 Phase 6, added 2026-09-20).
+
+Not exposed here: daily aggregation (§14) and the slideshow builder
+(§16, §29 Phase 5) both exist and both produce a real
+SlideshowManifest, but the only thing that triggers them today is the
+dashboard ("Save Slides", web/routes.py). There is no `slideshow`/
+`aggregate` subcommand and no scheduled job driving either of them,
+nor a frame-delivery job calling publish_slideshow() automatically
+(§29 Phase 7).
 """
 from __future__ import annotations
 

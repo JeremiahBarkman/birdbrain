@@ -1,15 +1,13 @@
 """The slideshow manifest shape frame adapters operate on (§16.4:
 "Produce a manifest describing the slideshow").
 
-The daily slideshow builder that actually produces one of these
-(§29 Phase 5) doesn't exist yet. This module defines only the shape,
-matching what §17.4's PhotoFrameAdapter.publish_slideshow() interface
-already commits to taking, so the adapter package (Phase 6, this
-module's siblings) can be built and tested independently of the
-builder. When Phase 5 lands, it should produce exactly this shape —
-revisit this module alongside it if that turns out not to fit, rather
-than letting the adapters silently drift out of sync with whatever the
-builder ends up producing.
+This module defines only the shape, matching what §17.4's
+PhotoFrameAdapter.publish_slideshow() interface commits to taking, so
+the adapter package (Phase 6, this module's siblings) can be built and
+tested independently of the builder. slideshow/builder.py
+(§29 Phase 5, 2026-09-21) produces exactly this shape; keep the two in
+sync, and change this module alongside the builder rather than letting
+the adapters drift out of step with what it emits.
 """
 from __future__ import annotations
 

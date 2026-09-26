@@ -571,9 +571,14 @@ def api_slideshow():
     Applies the same qualification rule §16.2 describes (highest
     confidence at/above birdnet.slideshow_minimum_confidence, and an
     approved image to show) as a live query against detections, the
-    same "since_utc=today" pattern /api/stats already uses — the
-    daily_species_summary table the Phase 5 aggregation job maintains
-    isn't wired to run on any schedule yet, so nothing here reads it.
+    same "since_utc=today" pattern /api/stats already uses, rather
+    than reading the daily_species_summary table aggregation maintains
+    (§14). Deliberate: this endpoint is a cheap read that has to stay
+    current as detections arrive through the day, while refreshing
+    that table is a write, and going through build_daily_slideshow()
+    would re-render every slide just to preview them in a browser.
+    /api/slideshow/export.zip below does call the real builder,
+    because that output is the one meant to reach the frame.
     """
     conn = _connect()
     try:

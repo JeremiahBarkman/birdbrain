@@ -6,11 +6,16 @@ scripts/install.sh (CLAUDE.md rule: don't put business logic in shell
 scripts). install.sh runs `bird-display doctor` as its final
 prerequisite gate after setting up the venv.
 
-Not every §25 doctor item is implemented yet (network access, frame
-configuration, image-provider configuration) — those are Phase 4+
-concerns tied to features not yet built. What's here covers what
-actually gates a fresh install: platform/Python/BirdNET/directories/
-disk/audio devices/microphone permission/service auto-start.
+What's here covers what actually gates a fresh install: platform/
+Python/BirdNET/directories/disk/audio devices/microphone permission/
+service auto-start.
+
+Three §25 doctor items are still missing: network access, frame
+configuration, and image-provider configuration. These were once
+deferred as "features not yet built", which is no longer the reason —
+images (§29 Phase 4) and the frame adapter package (Phase 6) both
+exist now, so these are real gaps in coverage rather than checks
+waiting on their subject to land.
 """
 from __future__ import annotations
 
@@ -173,7 +178,7 @@ def check_required_directories(data_directory: Path) -> CheckResult:
         "audio/processing",
         "audio/processed",
         "audio/failed",
-        "audio/clips",
+        "audio/best_clips",  # audio/clips.py's layout — not "clips"
         "database",
         "images",
         "slideshows",

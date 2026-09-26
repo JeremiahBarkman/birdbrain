@@ -46,14 +46,27 @@ Raspberry Pi 4B, both with a real USB microphone:
   (aarch64, e.g. a Raspberry Pi 4B), with the right BirdNET backend
   (`tensorflow` vs. the much lighter `tflite-runtime`) picked
   automatically per platform.
+- Daily species aggregation (§14) and the daily slideshow builder
+  (§16): one local day's detections are recomputed into
+  `daily_species_summary`, and each qualifying species' approved photo
+  is rendered into a finished 1920x1080 slide with text overlays,
+  recorded as a manifest under `data/slideshows/<date>/`.
 - A photo-frame delivery adapter package (`bird-display frame test`/
   `frame inspect`) with a working `local_export` adapter — the
-  guaranteed manual-transfer fallback (§17.5), usable standalone ahead
-  of the slideshow builder below.
+  guaranteed manual-transfer fallback (§17.5) — plus the dashboard's
+  "Save Slides" button, which builds today's slideshow and downloads it
+  as a single ZIP to whatever device the dashboard is open on, ready to
+  copy onto an SD card or the frame's own storage.
 
-Not yet built: daily species aggregation, the daily slideshow builder,
-and delivering that slideshow to the Euphro WF1561 automatically (§29
-Phases 5 and 7 of the requirements doc).
+Not yet built: running any of that unattended (§29 Phase 7). Nothing
+drives aggregation or the slideshow build on a schedule — both run only
+when a human asks (the dashboard button today; `dates_due_for_aggregation()`
+already decides *which* dates are due, but nothing calls it) — and
+nothing delivers a slideshow to the Euphro WF1561 automatically, so
+transfer to the frame is still the manual USB/SD workflow. Also not
+done: incremental re-rendering (every build re-renders every species)
+and pruning old `data/slideshows/` dates
+(`slideshow.retain_daily_slideshows_days` is unread).
 
 See [`DEVELOPMENT.md`](DEVELOPMENT.md) for the full phase-by-phase
 history — every real bug found (many only surfaced by actually running
