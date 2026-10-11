@@ -885,6 +885,34 @@ td .scientific {
   padding: 0.5rem;
 }
 
+/* "Record" prompt (see dashboard.js's live recording section) — a
+   plain dialog, not click-to-dismiss like the image modals: the
+   backdrop is only there to make an unanswered question obvious. */
+.record-prompt {
+  cursor: default;
+}
+
+.record-prompt-content {
+  background: var(--surface);
+  color: var(--text);
+  border-radius: 10px;
+  padding: 1.25rem 1.5rem;
+  max-width: min(420px, calc(100vw - 32px));
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.5);
+}
+
+.record-prompt-title {
+  font-weight: 600;
+  font-size: 1.1rem;
+}
+
+.record-prompt-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
 .recording-modal-content {
   display: flex;
   flex-direction: column;

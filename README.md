@@ -34,7 +34,8 @@ Raspberry Pi 4B, both with a real USB microphone:
   stats, a per-species table with photo/audio/reject/delete controls, a
   live microphone level meter with adjustable gain and device
   selection, a real-time "Listen Live" audio button with its own
-  spectrogram, and per-species spectrograms with a high-pass filter
+  spectrogram, a "Record" button that saves the live stream as a WAV
+  file on the viewing computer, and per-species spectrograms with a high-pass filter
   (see screenshots above).
 - `bird-display setup` — an interactive wizard for location (geocoded
   from a city/state/ZIP) and microphone selection.

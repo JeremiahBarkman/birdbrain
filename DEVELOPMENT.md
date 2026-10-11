@@ -1759,3 +1759,27 @@ the Pi: all four new checks run green against the real install, with
 `database_access` confirming the schema is up to date and
 `frame_configuration` confirming `data/frame-export/current` is
 writable.
+
+### "Record" the live stream to the viewer's computer (2026-10-11)
+
+User request: a dashboard button that records the live stream to a
+local file on the computer viewing the page, asking every 5 minutes
+whether to continue — "No", or no answer within 30 seconds, stops and
+saves to the browser's downloads.
+
+Implemented entirely client-side in `dashboard.js` (no server or
+schema changes): the button opens its own `fetch()` of the existing
+`/api/monitor/live` stream and keeps the raw bytes in memory, so it
+works independently of "Listen Live" and saves the exact PCM capture
+produced (lossless, unaffected by the live high-pass filter) rather
+than a MediaRecorder re-encode. On save, the streaming header's
+placeholder `0x7FFFFFFF` sizes (`audio/wav_stream.py`) are patched to
+the real byte counts so the file reports its true length. Audio keeps
+recording while the keep-going prompt is open, so "Yes" leaves no
+gap; if capture stops mid-recording, what was received is saved.
+
+Worth knowing: the recording lives in browser memory until saved
+(~5.8 MB/min at 48 kHz mono 16-bit, ~29 MB per 5-minute block), and
+closing the tab discards it — a `beforeunload` warning guards that.
+The browser decides where "downloads" is. Each recording is one more
+relay client on the capture process, same as a Listen Live listener.

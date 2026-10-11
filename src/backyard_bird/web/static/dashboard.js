@@ -1006,6 +1006,206 @@ liveMonitorAudio.addEventListener("error", () => {
   stopLiveMonitor();
 });
 
+// "Record" (user request, 2026-10-11): saves the live stream to a WAV
+// file on the computer viewing the dashboard — nothing is stored on
+// the Pi. Reads /api/monitor/live with its own fetch() rather than
+// tapping Listen Live's <audio> element, so recording works whether
+// or not anyone is listening, and the file is the exact PCM the
+// capture process produced (lossless, unaffected by the live
+// high-pass filter) instead of a lossy MediaRecorder re-encode. Every
+// LIVE_RECORD_CHECK_MS it asks whether to keep going; "No", or no
+// answer within LIVE_RECORD_PROMPT_TIMEOUT_MS, ends it and downloads
+// the file. Audio keeps recording while the question is showing, so
+// answering "Yes" never leaves a gap.
+const LIVE_RECORD_CHECK_MS = 5 * 60 * 1000;
+const LIVE_RECORD_PROMPT_TIMEOUT_MS = 30 * 1000;
+const WAV_HEADER_BYTES = 44; // audio/wav_stream.py's streaming_wav_header() is a plain 44-byte PCM header
+
+const liveRecordBtn = document.getElementById("live-record-btn");
+const recordPrompt = document.getElementById("record-prompt");
+const recordPromptText = document.getElementById("record-prompt-text");
+const recordPromptYes = document.getElementById("record-prompt-yes");
+const recordPromptNo = document.getElementById("record-prompt-no");
+
+let liveRecording = null; // {controller, chunks, startedAt, checkTimer, promptTimer, tickTimer, promptDeadline}
+
+function formatElapsed(ms) {
+  const totalSeconds = Math.floor(ms / 1000);
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = String(totalSeconds % 60).padStart(2, "0");
+  return hours ? `${hours}:${String(minutes).padStart(2, "0")}:${seconds}` : `${minutes}:${seconds}`;
+}
+
+function recordingFilename(startedAt) {
+  const pad = (n) => String(n).padStart(2, "0");
+  const d = new Date(startedAt);
+  return (
+    `backyard-birds-${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `_${pad(d.getHours())}-${pad(d.getMinutes())}-${pad(d.getSeconds())}.wav`
+  );
+}
+
+// The stream's header carries placeholder 0x7FFFFFFF sizes (see
+// wav_stream.py) — fine for a live player, but a saved file needs the
+// real ones or editors will report a bogus length. Also trims any
+// trailing partial sample frame left by cutting the stream mid-chunk.
+async function buildWavBlob(chunks) {
+  const raw = new Blob(chunks);
+  if (raw.size <= WAV_HEADER_BYTES) return null;
+  const header = await raw.slice(0, WAV_HEADER_BYTES).arrayBuffer();
+  const view = new DataView(header);
+  const blockAlign = view.getUint16(32, true) || 1;
+  const dataBytes = Math.floor((raw.size - WAV_HEADER_BYTES) / blockAlign) * blockAlign;
+  view.setUint32(4, 36 + dataBytes, true); // RIFF chunk size
+  view.setUint32(40, dataBytes, true); // data chunk size
+  return new Blob([header, raw.slice(WAV_HEADER_BYTES, WAV_HEADER_BYTES + dataBytes)], { type: "audio/wav" });
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  // Revoked later, not immediately — some browsers start reading the
+  // blob only after click() returns.
+  setTimeout(() => URL.revokeObjectURL(url), 60 * 1000);
+}
+
+function renderRecordButton() {
+  if (!liveRecording) {
+    liveRecordBtn.textContent = "⏺ Record";
+    liveRecordBtn.classList.remove("active");
+    return;
+  }
+  liveRecordBtn.textContent = `⏹ Stop Recording ${formatElapsed(Date.now() - liveRecording.startedAt)}`;
+  liveRecordBtn.classList.add("active");
+}
+
+function renderRecordPrompt() {
+  const secondsLeft = Math.max(0, Math.ceil((liveRecording.promptDeadline - Date.now()) / 1000));
+  recordPromptText.textContent =
+    `Recording for ${formatElapsed(Date.now() - liveRecording.startedAt)}. ` +
+    `It will stop and save automatically in ${secondsLeft}s.`;
+}
+
+function scheduleRecordCheck() {
+  liveRecording.checkTimer = setTimeout(showRecordPrompt, LIVE_RECORD_CHECK_MS);
+}
+
+function showRecordPrompt() {
+  if (!liveRecording) return;
+  liveRecording.promptDeadline = Date.now() + LIVE_RECORD_PROMPT_TIMEOUT_MS;
+  liveRecording.promptTimer = setTimeout(() => finishLiveRecording(), LIVE_RECORD_PROMPT_TIMEOUT_MS);
+  renderRecordPrompt();
+  recordPrompt.hidden = false;
+  recordPromptYes.focus();
+}
+
+function hideRecordPrompt() {
+  recordPrompt.hidden = true;
+  if (liveRecording) {
+    clearTimeout(liveRecording.promptTimer);
+    liveRecording.promptTimer = null;
+    liveRecording.promptDeadline = null;
+  }
+}
+
+// save=false discards instead — only for a recording that failed
+// before receiving any audio, which has nothing worth downloading.
+async function finishLiveRecording(save = true) {
+  if (!liveRecording) return;
+  const recording = liveRecording;
+  liveRecording = null; // first, so the fetch loop's abort below isn't treated as a stream failure
+  hideRecordPrompt();
+  clearTimeout(recording.checkTimer);
+  clearTimeout(recording.promptTimer);
+  clearInterval(recording.tickTimer);
+  recording.controller.abort();
+  renderRecordButton();
+  if (!save) return;
+
+  const blob = await buildWavBlob(recording.chunks);
+  if (!blob) {
+    alert("No audio was received, so there was nothing to save.");
+    return;
+  }
+  downloadBlob(blob, recordingFilename(recording.startedAt));
+}
+
+async function startLiveRecording() {
+  const recording = {
+    controller: new AbortController(),
+    chunks: [],
+    startedAt: Date.now(),
+    checkTimer: null,
+    promptTimer: null,
+    tickTimer: null,
+    promptDeadline: null,
+  };
+  liveRecording = recording;
+  recording.tickTimer = setInterval(() => {
+    renderRecordButton();
+    if (liveRecording && liveRecording.promptDeadline) renderRecordPrompt();
+  }, 1000);
+  renderRecordButton();
+  scheduleRecordCheck();
+
+  try {
+    const response = await fetch("/api/monitor/live", { signal: recording.controller.signal, cache: "no-store" });
+    if (!response.ok) {
+      let message = `HTTP ${response.status}`;
+      try {
+        message = (await response.json()).error || message;
+      } catch (_) {
+        // non-JSON error body — keep the status code
+      }
+      throw new Error(message);
+    }
+    const reader = response.body.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      recording.chunks.push(value);
+    }
+    // The server ended the stream (capture stopped) — save what we got.
+    if (liveRecording === recording) finishLiveRecording();
+  } catch (err) {
+    if (liveRecording !== recording) return; // our own abort() from finishLiveRecording()
+    console.error("live recording failed:", err);
+    if (recording.chunks.length) {
+      finishLiveRecording(); // keep whatever was captured before the failure
+    } else {
+      finishLiveRecording(false);
+      alert(`Could not start recording: ${err.message}`);
+    }
+  }
+}
+
+liveRecordBtn.addEventListener("click", () => {
+  if (liveRecording) finishLiveRecording();
+  else startLiveRecording();
+});
+
+recordPromptYes.addEventListener("click", () => {
+  if (!liveRecording) return;
+  hideRecordPrompt();
+  scheduleRecordCheck();
+});
+
+recordPromptNo.addEventListener("click", () => finishLiveRecording());
+
+// Closing or reloading the tab would silently discard an in-progress
+// recording (it only exists in this page's memory until saved).
+window.addEventListener("beforeunload", (event) => {
+  if (!liveRecording) return;
+  event.preventDefault();
+  event.returnValue = "";
+});
+
 // Software gain control (user request: the mic runs quite low by
 // default, with no hardware knob for it). GET/POST /api/mic-gain — see
 // audio/gain.py for how a change here reaches the already-running

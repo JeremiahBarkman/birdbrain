@@ -20,6 +20,7 @@
         <option value="">Loading devices…</option>
       </select>
       <button id="live-monitor-btn" class="filter-btn mic-status-listen" type="button">🔊 Listen Live</button>
+      <button id="live-record-btn" class="filter-btn" type="button">⏺ Record</button>
       <button id="slideshow-btn" class="filter-btn" type="button">▶ Slideshow</button>
       <button id="save-sd-btn" class="filter-btn" type="button">💾 Save Slides</button>
       <button id="heatmap-view-btn" class="filter-btn" type="button">🔥 Heatmap</button>
@@ -185,6 +186,17 @@
         </select>
       </div>
       <audio id="recording-modal-audio" controls preload="none" src=""></audio>
+    </div>
+  </div>
+
+  <div class="image-modal record-prompt" id="record-prompt" hidden>
+    <div class="record-prompt-content" role="alertdialog" aria-labelledby="record-prompt-title" aria-describedby="record-prompt-text">
+      <div class="record-prompt-title" id="record-prompt-title">Keep recording?</div>
+      <p id="record-prompt-text"></p>
+      <div class="record-prompt-actions">
+        <button id="record-prompt-yes" class="filter-btn active" type="button">Yes, continue</button>
+        <button id="record-prompt-no" class="filter-btn" type="button">No, save now</button>
+      </div>
     </div>
   </div>
 

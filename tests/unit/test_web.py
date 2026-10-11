@@ -114,6 +114,18 @@ def test_index_page_includes_mic_status_markup(client) -> None:
     assert b'id="live-monitor-audio"' in response.data
 
 
+def test_index_page_includes_live_record_markup(client) -> None:
+    # The "Record" button and its keep-recording prompt are wired up by
+    # dashboard.js's live recording section; a missing id there is a
+    # null-reference error that breaks the rest of the script.
+    response = client.get("/")
+    assert b'id="live-record-btn"' in response.data
+    assert b'id="record-prompt"' in response.data
+    assert b'id="record-prompt-text"' in response.data
+    assert b'id="record-prompt-yes"' in response.data
+    assert b'id="record-prompt-no"' in response.data
+
+
 def test_api_stats_reports_seeded_detection(client) -> None:
     response = client.get("/api/stats")
     assert response.status_code == 200
