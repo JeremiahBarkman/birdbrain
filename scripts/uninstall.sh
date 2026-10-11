@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Reverses ./scripts/install.sh: stops any running services and
-# removes the virtual environment (and, with it, the editable
-# `bird-display` install). install.sh never touches anything outside
-# this repo — no launchd jobs, no files elsewhere on the system — so
-# that's the whole of the non-destructive part.
+# Reverses ./scripts/install.sh: stops any running services, removes
+# the boot-time auto-start services if `bird-display services install`
+# was ever run (LaunchAgents in ~/Library/LaunchAgents on macOS,
+# systemd units in /etc/systemd/system on Linux — the only things this
+# project ever puts outside the repo), and removes the virtual
+# environment (and, with it, the editable `bird-display` install).
 #
 # config/config.yaml and data/ (the detection database, captured
 # audio, images, slideshows, and logs) are left in place unless you
@@ -52,6 +53,49 @@ if [ -d data/run ] && ls data/run/*.pid >/dev/null 2>&1; then
     ./scripts/stop_all.sh </dev/null || true
     echo
 fi
+
+# ---------------------------------------------------------------------------
+# Step 1b: remove boot-time auto-start services.
+#
+# Done here in shell rather than via `bird-display services uninstall`
+# because that needs the venv — and if a previous run of this script
+# already removed .venv/, the services would otherwise be orphaned with
+# no tool left to remove them. Left in place, launchd's KeepAlive keeps
+# respawning them (and once .venv/ is gone, keeps failing to), and they
+# start again at every login. The file name patterns must match
+# service_install.py's launchd_plist_filename()/systemd_unit_filename().
+# ---------------------------------------------------------------------------
+
+case "$(uname -s)" in
+    Darwin)
+        for plist in "$HOME"/Library/LaunchAgents/com.backyardbird.*.plist; do
+            [ -e "$plist" ] || continue
+            launchctl bootout "gui/$(id -u)" "$plist" >/dev/null 2>&1 || true
+            rm -f "$plist"
+            echo "Removed auto-start LaunchAgent $(basename "$plist")"
+        done
+        ;;
+    Linux)
+        units=()
+        for unit_path in /etc/systemd/system/birdbrain-*.service; do
+            [ -e "$unit_path" ] && units+=("$(basename "$unit_path")")
+        done
+        if [ "${#units[@]}" -gt 0 ]; then
+            SUDO=""
+            [ "$(id -u)" -ne 0 ] && SUDO="sudo"
+            echo "Removing auto-start systemd services (needs sudo): ${units[*]}"
+            $SUDO systemctl disable --now "${units[@]}" || true
+            if (cd /etc/systemd/system && $SUDO rm -f "${units[@]}"); then
+                $SUDO systemctl daemon-reload || true
+                echo "Removed auto-start systemd services."
+            else
+                echo "Couldn't remove them — run manually:"
+                echo "  sudo systemctl disable --now ${units[*]}"
+                echo "  (cd /etc/systemd/system && sudo rm -f ${units[*]}) && sudo systemctl daemon-reload"
+            fi
+        fi
+        ;;
+esac
 
 # ---------------------------------------------------------------------------
 # Step 2: remove the virtual environment.

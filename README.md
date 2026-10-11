@@ -180,7 +180,7 @@ your installation.
 ### Uninstalling
 
 ```bash
-./scripts/uninstall.sh                    # stops services, removes .venv/
+./scripts/uninstall.sh                    # stops services, removes auto-start services and .venv/
 ./scripts/uninstall.sh --purge-data       # also deletes data/ and config/config.yaml
                                            # (detection database, captured audio, images —
                                            #  confirmed interactively; add --yes to skip that)
